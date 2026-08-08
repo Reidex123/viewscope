@@ -6,6 +6,7 @@ on:
     branches: ["master", "main"]
     paths:
       - "src/viewscope/**.py"
+      - "tests/**.py"
       - ".ruff.toml"
       - "pyproject.toml"
       - "uv.lock"
@@ -26,16 +27,23 @@ jobs:
           persist-credentials: true
           submodules: false
 
-      - name: Setup uv
-        run: |
-          chmod +x scripts/setup.sh
-          ./scripts/setup.sh
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57
+        with:
+          python-version: "3.14"
+          working-directory: "."
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
 
       - name: Install deps
-        run: uv sync
+        run: uv sync --only-group dev
 
       - name: Lint
         run: uv run ruff check .
 
       - name: Format check
         run: uv run ruff format . --check
+
+      - name: Type check
+        run: uv run ty check .
