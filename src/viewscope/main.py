@@ -1,24 +1,33 @@
-import viewscope_core as vc
+"""ViewScope desktop viewer: entry point.
+
+uv run viewscope
+"""
+
+from __future__ import annotations
+
+import sys
+
+from PySide6.QtWidgets import QApplication
+
+from . import config
+
+# from .window import MainWindow
+from . import window as wd
 
 
-def main():
-    print("Hello world from ViewScope!")
+def main() -> int:
+    app = QApplication(sys.argv)
+    app.setOrganizationName(config.ORG_NAME)
+    app.setApplicationName(config.APP_NAME)
 
-    # NOTE: The code below was copied from the README that came with the
-    # scaffold code. This code isn't actually intended to do anything. We're
-    # only calling it here to ensure our dev environment is properly setup and
-    # that all the required libraries have been imported correctly.
+    window = wd.MainWindow(config.DATA_DIR)
+    window.show()
+    window.raise_()
+    window.activateWindow()
+    window.start()
 
-    plan = vc.load_plan("data/kiri/plan.json")
-    v, f, colors, edges = vc.camera_glyph(
-        plan.positions[0], plan.yaws_deg[0], plan.pitches_deg[0]
-    )
+    return app.exec()
 
-    mesh = vc.load_scene("data/kiri/scene.obj")
-    targets, normals = vc.load_targets("data/kiri/targets.ply")
-    r = vc.SceneRenderer(mesh, 1368, 912, 53.1301)
-    pose = vc.camera_pose([190.0, 105.0, 5.0], 30.0, -20.0)
-    _row = vc.camera_visibility(
-        r.render_depth(pose), targets, normals, [190.0, 105.0, 5.0], pose, plan.camera
-    )
-    r.close()
+
+if __name__ == "__main__":
+    sys.exit(main())

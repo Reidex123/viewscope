@@ -3,7 +3,8 @@
 ## How to run
 
 ```
-uv run viewscope
+uv run viewscope 
+
 ```
 
 ---
