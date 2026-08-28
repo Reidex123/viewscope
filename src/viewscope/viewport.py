@@ -1,10 +1,10 @@
 """The 3D viewport: a render window plus the views drawn into it."""
 
-from __future__ import annotations
+from __future__ import annotations  # noqa: E402
 
 # Must be set before the Qt widget module is imported, so VTK binds to the
 # same Qt binding we are using rather than guessing.
-import vtkmodules.qt
+import vtkmodules.qt  # noqa: E402
 
 vtkmodules.qt.PyQtImpl = "PySide6"
 
@@ -13,6 +13,7 @@ from PySide6.QtCore import Signal  # noqa: E402
 from vtkmodules.qt.QVTKRenderWindowInteractor import (  # noqa: E402
     QVTKRenderWindowInteractor,
 )
+from vtkmodules.vtkInteractionWidgets import vtkCameraOrientationWidget  # noqa: E402
 
 from .camera import CameraController  # noqa: E402
 from .config import (  # noqa: E402
@@ -52,6 +53,14 @@ class Viewport(QVTKRenderWindowInteractor):
         self.camera = None
         self._mode = MODE_ALL
 
+        # Camera Orientation Widget configuration
+        self.orientation_widget = vtkCameraOrientationWidget()
+        self.orientation_widget.SetParentRenderer(self.renderer)
+        # Representation = the widget that's drawn in render window
+        representation = self.orientation_widget.GetRepresentation()
+        representation.AnchorToUpperLeft()  # type: ignore
+        self.set_camera_orientation_visible(True)
+
     # -- lifecycle -----------------------------------------------------
 
     def start(self):
@@ -60,6 +69,7 @@ class Viewport(QVTKRenderWindowInteractor):
 
     def shutdown(self):
         # Release the GL context explicitly; skipping this crashes on macOS.
+
         self.Finalize()
 
     def render(self):
@@ -145,3 +155,15 @@ class Viewport(QVTKRenderWindowInteractor):
         self.glyphs.set_active(None if info is None else info.index)
         self.camera_changed.emit(info)
         self.render()
+
+    def set_camera_orientation_visible(self, visible: bool):  # orientation widget
+        if visible:
+            self.orientation_widget.On()
+        else:
+            self.orientation_widget.Off()
+        self.render()
+
+    def toggle_camera_orientation_visible(self):
+        current_visibility = self.orientation_widget.GetEnabled()
+        self.set_camera_orientation_visible(not current_visibility)
+        # print(str(current_visibility) + " is widget visibility")
