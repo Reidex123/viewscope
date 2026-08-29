@@ -1,4 +1,5 @@
-"""The application shell: docks, actions, and the wiring between them.
+"""
+The application shell: docks, actions, and the wiring between them.
 
 This class deliberately holds no scene state. It routes panel signals into the
 viewport and viewport signals back into the panels.
@@ -17,13 +18,16 @@ from PySide6.QtWidgets import (
     QStatusBar,
 )
 
-from .CameraFlippingPanel import CameraFlippingPanel
-from .CameraViewport import CameraViewport
-from .config import APP_NAME, DATA_DIR, MODES, ORG_NAME
-from .DisplayPanel import DisplayPanel
-from .loading import SceneData, SceneLoader
-from .MetricsPanel import MetricsPanel
-from .viewport import Viewport
+from viewscope.camera.structs import CameraInfo
+from viewscope.CameraViewport import CameraViewport
+from viewscope.config import APP_NAME, DATA_DIR, MODES, ORG_NAME
+from viewscope.data.loader import SceneLoader
+from viewscope.data.scene import SceneData
+from viewscope.data.store import SCENE_STORE
+from viewscope.DisplayPanel import DisplayPanel
+from viewscope.MetricsPanel import MetricsPanel
+from viewscope.panels.viewpoints_panel import ViewpointsPanel
+from viewscope.viewport import Viewport
 
 
 class MainWindow(QMainWindow):
@@ -37,16 +41,13 @@ class MainWindow(QMainWindow):
 
         self.display_panel = DisplayPanel()
         self.metrics_panel = MetricsPanel()
-        self.viewpoint_panel_choice = CameraFlippingPanel()
-
+        self.viewpoints_panel = ViewpointsPanel()
         self.camera_viewport = CameraViewport(self)
-
-        # self.sector_panel =
 
         self.docks = {}
         self._add_dock(
             "Viewpoints",
-            self.viewpoint_panel_choice,
+            self.viewpoints_panel,
             Qt.DockWidgetArea.LeftDockWidgetArea,
         )
         self._add_dock(
@@ -66,9 +67,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Loading...")
         self._restore_layout()
 
+        # Load the scene
         self.loader = SceneLoader(data_dir, self)
         self.loader.progress.connect(self.statusBar().showMessage)
-        self.loader.loaded.connect(self._on_loaded)
+        self.loader.loaded.connect(self._on_scene_loaded)
         self.loader.failed.connect(self._on_failed)
         self.loader.start()
 
@@ -94,7 +96,7 @@ class MainWindow(QMainWindow):
         # self.display_panel.glyphs_toggled.connect(self.viewport.set_glyphs_visible)
         self.display_panel.field_changed.connect(self._on_field_changed)
 
-        # self.viewpoint_panel_choice.camera_picked.connect(self.viewport.show_camera)
+        # self.viewpoints_panel.camera_picked.connect(self.viewport.show_camera)
         # self.viewport.camera_changed.connect(self._on_camera_changed)
 
         self.display_panel.mode_changed.connect(self.camera_viewport.set_mode)
@@ -106,9 +108,9 @@ class MainWindow(QMainWindow):
         )
         self.display_panel.field_changed.connect(self._on_field_changed)
 
-        self.viewpoint_panel_choice.camera_picked.connect(
-            self.camera_viewport.show_camera
-        )
+        self.viewpoints_panel.camera_picked.connect(self.camera_viewport.show_camera)
+
+        SCENE_STORE.plan_changed.connect(self._on_camera_changed)
         self.camera_viewport.camera_changed.connect(self._on_camera_changed)
 
     def _build_actions(self):
@@ -178,19 +180,20 @@ class MainWindow(QMainWindow):
             self, "ViewScope", f"Could not load the bundle.\n\n{message}"
         )
 
-    def _on_loaded(self, data: SceneData):
-        self.viewport.set_scene(data)
-        self.camera_viewport.set_scene(data)
-        self.viewpoint_panel_choice.populate(data.plan)
-        self.metrics_panel.show_bundle(data)
+    def _on_scene_loaded(self, scene: SceneData):
+        SCENE_STORE.set_scene(scene)
 
-        if data.has_scores:
+        self.viewport.set_scene(scene)
+        self.camera_viewport.set_scene(scene)
+        self.metrics_panel.show_bundle()
+
+        if scene.has_scores:
             self._on_field_changed(self.display_panel.field.currentText())
         else:
             self.display_panel.disable_fields()
             self.metrics_panel.show_field(None)
-            if data.scores_error:
-                print(f"scores unavailable: {data.scores_error}")
+            if scene.scores_error:
+                print(f"scores unavailable: {scene.scores_error}")
 
         self.viewport.show_overview()
         self.camera_viewport.show_overview()
@@ -198,16 +201,26 @@ class MainWindow(QMainWindow):
 
     def _on_field_changed(self, field):
         self.metrics_panel.show_field(self.viewport.set_scalar_field(field))
-
         self.metrics_panel.show_field(self.camera_viewport.set_scalar_field(field))
 
-    def _on_camera_changed(
-        self, info
-    ):  # info, see on_seletion in CameraFlippingPanel.py
+    def _on_camera_changed(self, info: CameraInfo | None):
+        if SCENE_STORE.scene is None:
+            return
+
         self.metrics_panel.show_camera(info)
-        self.viewpoint_panel_choice.select_row(None if info is None else info.index)
+        self.viewport.on_camera_changed()
+
+        # TODO(Adam): Fix this. Currently whenever we call this, the camera viewport
+        #             behaves wonky when selecting a camera.
+        #             It seems to be related to the glyphs being re-created.
+        # self.camera_viewport.on_camera_changed()
+
+        if info is not None:
+            self.viewpoints_panel.select_row(info.index)
+
+        camera_count = SCENE_STORE.camera_count
         self.statusBar().showMessage(
-            "Overview" if info is None else f"Camera {info.index + 1} of {info.count}"
+            "Overview" if info is None else f"Camera {info.index + 1} of {camera_count}"
         )
 
     # -- layout persistence --------------------------------------------
