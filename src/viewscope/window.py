@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
         self.display_panel.point_size_changed.connect(self.camera_viewport.set_point_size)
         self.display_panel.field_changed.connect(self._on_field_changed)
         self.display_panel.occlusion_toggled.connect(self._on_occlusion_toggled)
+        self.display_panel.grid_toggled.connect(self.viewport.set_grid_visible)
         self.display_panel.glyphs_toggled.connect(self.viewport.set_glyphs_visible)
 
         # This updates the camera in FPV viewport

@@ -28,7 +28,14 @@ from viewscope.config import (
 )
 from viewscope.data.scene import SceneData
 from viewscope.data.store import SCENE_STORE
-from viewscope.scene import CameraGlyphs, CameraOutline, FieldStats, MeshView, TargetCloudView
+from viewscope.scene import (
+    CameraGlyphs,
+    CameraOutline,
+    FieldStats,
+    FloorGrid,
+    MeshView,
+    TargetCloudView,
+)
 
 
 class Viewport(QVTKRenderWindowInteractor):
@@ -50,6 +57,10 @@ class Viewport(QVTKRenderWindowInteractor):
 
         self._interactor = self.GetRenderWindow().GetInteractor()
         self._interactor.SetInteractorStyle(vtk.vtkInteractorStyleTrackballCamera())
+        # TODO(Azaam): Enable the two lines, when resuming Grid optimization
+        # Adding observer only on active camera, for zoom-scale calculation.
+        # local_camera = self.renderer.GetActiveCamera()
+        # local_camera.AddObserver(vtk.vtkCommand.ModifiedEvent, self._on_camera_modified)
 
         self.mesh = None
         self.cloud = None
@@ -61,6 +72,12 @@ class Viewport(QVTKRenderWindowInteractor):
         self._mouse_lock_position = QPoint()
         self._mouse_lock_global_pos = QPoint()
         self._mouse_virtual_local_pos = QPoint()
+
+        # TODO(Azaam): Enable when resuming Grid optimization
+        # self.initial_camera_distance = self.renderer.GetActiveCamera().GetDistance()
+        # self.zoom_distance = 1.0  # The zoom distance from cam to focal point.
+        # self.grid_scale = 1.0  # The scale factor for the grid, based on zoom distance.
+        # self.grid_visible = True  # Tracking visibility locally to hide grid properly.
 
         self.selected_outline = CameraOutline()
         self.selected_camera_pos = (0, 0, 0)
@@ -77,6 +94,10 @@ class Viewport(QVTKRenderWindowInteractor):
         representation.AnchorToUpperLeft()
 
         self.set_camera_orientation_visible(True)
+
+        # FloorGrid configuration
+        self.grid_origin_point = (185, 110, -15)  # Origin point for grid spawn
+        self.floor_grid = FloorGrid(self.renderer, 100, self.grid_origin_point)
 
     # -- Lifecycle -----------------------------------------------------
 
@@ -161,6 +182,21 @@ class Viewport(QVTKRenderWindowInteractor):
         """Paint the targets one camera can see; None restores the field colours."""
         if self.has_scene and self.cloud is not None:
             self.cloud.set_occlusion(mask)
+            self.render()
+
+    def set_grid_visible(self, visible: bool):
+        """Show/Hide the floor grid."""
+        # self.grid_visible = visible
+        if self.has_scene and self.floor_grid is not None:
+            # TODO(Azaam): Enable the segment, when resuming Grid optimization
+            # if self.grid_visible:
+            #     self.floor_grid.remove_from(self.renderer)
+            #     self.floor_grid = FloorGrid(
+            #         self.renderer, 100, self.grid_origin_point, self.grid_scale
+            #     )
+            # else:
+            #     self.floor_grid.set_visible(visible)
+            self.floor_grid.set_visible(visible)
             self.render()
 
     # -- Camera --------------------------------------------------------
@@ -314,3 +350,33 @@ class Viewport(QVTKRenderWindowInteractor):
         # Restore cursor visibility and position
         self.ShowCursor()
         QCursor.setPos(self._mouse_lock_global_pos)
+
+    # TODO(Azaam): Uncomment method, when resuming Grid optimization
+    # def _on_camera_modified(self, obj, event) -> None:
+    #     """Event handler for calculate zoom level + grid scale, and applying it to grid actor.
+    #     The zoom level is based on cameras distance to focal point.
+    #     Grid Scale changes whenever the distance variable changes by a factor of 10."""
+    #     active_camera = self.renderer.GetActiveCamera()
+    #     distance = active_camera.GetDistance()  # From camera to focal point.
+
+    #     if distance == self.zoom_distance:
+    #         return  # Exit handler if no "zooming" was performed.
+    #     self.zoom_distance = distance
+
+    #     # - Change scale in steps of powers-of-10
+    #     raw_scale = distance / self.initial_camera_distance
+    #     exponent = floor(log10(raw_scale))
+    #     zoom_scale = 1.5**exponent  # Scale factor based on distance
+    #     # Used Deepseek for the calculation of the scale factor. (I changed bases though)
+
+    #     if zoom_scale == self.grid_scale:
+    #         return  # Exit handler if in same scale bucket/step.
+    #     self.grid_scale = zoom_scale  # Update grid scale based on zoom scale
+
+    #     ## Rebuild grid in scene
+    #     if self.floor_grid is not None:
+    #         self.floor_grid.remove_from(self.renderer)  # Remove old grid
+    #         if self.grid_visible:  # Only build if the checkbox is checked in DisplayPanel
+    #             self.floor_grid = FloorGrid(
+    #                 self.renderer, 100, self.grid_origin_point, self.grid_scale
+    #             )
