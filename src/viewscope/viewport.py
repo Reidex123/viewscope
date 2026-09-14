@@ -95,8 +95,11 @@ class Viewport(QVTKRenderWindowInteractor):
 
         self.set_camera_orientation_visible(True)
 
-        # FloorGrid configuration
-        self.grid_origin_point = (185, 110, -15)  # Origin point for grid spawn
+        self._finalized = False  # see shutdown()
+
+        # FloorGrid configuration. set_scene moves it onto the ground of
+        # whichever bundle is loaded, so this is only where it starts.
+        self.grid_origin_point = (0.0, 0.0, 0.0)
         self.floor_grid = FloorGrid(self.renderer, 100, self.grid_origin_point)
 
     # -- Lifecycle -----------------------------------------------------
@@ -106,7 +109,15 @@ class Viewport(QVTKRenderWindowInteractor):
         self._interactor.Initialize()
 
     def shutdown(self):
-        """Release the GL context explicitly; skipping this crashes on macOS."""
+        """Release the GL context explicitly; skipping this crashes on macOS.
+
+        Runs at most once: closing the window and later destroying it would
+        otherwise finalize the same render window twice, which frees the same
+        pointer twice.
+        """
+        if self._finalized:
+            return
+        self._finalized = True
         self.Finalize()
 
     def render(self):
@@ -125,10 +136,19 @@ class Viewport(QVTKRenderWindowInteractor):
         for glyph_actor in self.glyphs.actors:
             self._mouse_picker.AddPickList(glyph_actor)
 
+        self.grid_origin_point = self._ground_centre(data)
+        self.floor_grid.move_to(self.grid_origin_point)
+
         self.camera = CameraController(self.renderer, YFOV_DEG)
         self.renderer.ResetCamera()
         self.camera.save_overview()
         self.set_mode(self._mode)
+
+    @staticmethod
+    def _ground_centre(data: SceneData) -> tuple:
+        """The middle of the scene's footprint, at its lowest point."""
+        low, high = data.mesh.bounds
+        return (float((low[0] + high[0]) / 2), float((low[1] + high[1]) / 2), float(low[2]))
 
     @property
     def has_scene(self) -> bool:
