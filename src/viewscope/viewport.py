@@ -132,7 +132,8 @@ class Viewport(QVTKRenderWindowInteractor):
         self._interactor.Initialize()
 
     def shutdown(self):
-        """Release the GL context explicitly; skipping this crashes on macOS.
+        """
+        Release the GL context explicitly; skipping this crashes on macOS.
 
         Runs at most once: closing the window and later destroying it would
         otherwise finalize the same render window twice, which frees the same
@@ -140,6 +141,7 @@ class Viewport(QVTKRenderWindowInteractor):
         """
         if self._finalized:
             return
+
         self._finalized = True
         self.Finalize()
 
@@ -251,12 +253,13 @@ class Viewport(QVTKRenderWindowInteractor):
         if self.has_scene and self.camera is not None:
             self._moved(self.camera.show_overview())
 
-    def on_camera_changed(
-        self, info: CameraInfo | None
-    ):  # pass in an instance of CameraInfo?? So that camera colour change can happen here
+    def on_camera_changed(self, info: CameraInfo | None):
         """Update the highlighted camera. Change its colour to Gold, build outline around it."""
+        # INVARIANT: The glyphs should not be uninitialized at this stage!
+        assert self.glyphs is not None
+
         if info is not None:
-            self.glyphs.set_actor_colour_by_index(info.index)  # change colour here
+            self.glyphs.set_actor_colour_by_index(info.index)
             self.set_selected_camera_position(info)
 
             self.selected_outline.remove_from(self.renderer)
