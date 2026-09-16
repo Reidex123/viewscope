@@ -158,6 +158,7 @@ class Viewport(QVTKRenderWindowInteractor):
         for view in (self.mesh, self.cloud, self.glyphs):
             view.add_to(self.renderer)
 
+        self._mouse_picker.AddPickList(self.mesh.actor)
         for glyph_actor in self.glyphs.actors:
             self._mouse_picker.AddPickList(glyph_actor)
 
@@ -530,6 +531,9 @@ class Viewport(QVTKRenderWindowInteractor):
         # NOTE(AZAAM): This method works too.
         # self.glyphs.set_actor_colour(actor)
 
+        # NOTE(Adam): With the scene mesh added to the pick list,
+        #       this will correctly return None when clicking on the mesh,
+        #       therefore blocking glyph selections through the mesh.
         camera_id = self.glyphs.camera_id_of_actor(actor)
         if camera_id is None:
             return False
