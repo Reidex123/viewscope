@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
+import numpy as np
 import vtk
 from PySide6.QtCore import QElapsedTimer, QPoint, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor, QMouseEvent, QWheelEvent
@@ -23,13 +24,18 @@ from viewscope.config import (
     MODE_GEOMETRY,
     MODE_TARGETS,
     MODE_TEXTURED,
+    PICK_DRAG_SLOP_PX,
+    PICK_TARGET_RADIUS_PX,
     YFOV_DEG,
+    OverlayOptions,
 )
 from viewscope.data.scene import SceneData
 from viewscope.data.store import SCENE_STORE
 from viewscope.scene.camera import CameraMode, SceneCameraController
 from viewscope.scene.gizmos import CameraGlyphs, CameraModeGizmo, CameraOutline, FloorGrid
 from viewscope.scene.stats import FieldStats
+from viewscope.scene.target_gizmos import TargetOverlay
+from viewscope.scene.target_report import TargetReport
 from viewscope.scene.views import MeshView, TargetCloudView
 
 
@@ -48,6 +54,10 @@ class Viewport(QVTKRenderWindowInteractor):
 
     camera_changed = Signal(CameraInfo)
     camera_picked = Signal(int)
+    #: A surface target was clicked, by its row in the target cloud.
+    target_picked = Signal(int)
+    #: A click landed on nothing, so whatever was picked should be let go.
+    target_cleared = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -62,15 +72,38 @@ class Viewport(QVTKRenderWindowInteractor):
         self._mouse_picker = vtk.vtkPropPicker()
         self._mouse_picker.PickFromListOn()
 
+        # Targets are picked off the surface they sit on, so a click never
+        # reaches a target on the far side of the model. With the mesh hidden
+        # there is nothing to hide behind, and the cloud is picked directly.
+        self._surface_picker = vtk.vtkCellPicker()
+        self._surface_picker.PickFromListOn()
+        self._point_picker = vtk.vtkPointPicker()
+        self._point_picker.PickFromListOn()
+
         self.mesh = None
         self.cloud = None
         self.glyphs = None
         self.camera = None
+
+        self._camera_mode = CameraMode.LOOK_AT
+        self._render_mode = MODE_ALL
+
+        self._targets = None
+        self._overlay = TargetOverlay()
+        self._mode = MODE_ALL
+
         self._camera_mode = CameraMode.LOOK_AT
         self._render_mode = MODE_ALL
         self._mouse_locked = False
         self._mouse_lock_global_pos = QPoint()
         self._mouse_virtual_local_pos = QPointF()
+
+        # Where the gesture started, and how far it has travelled since. A
+        # left click that never travels is a pick; one that does is the user
+        # swinging the view around, and picks nothing.
+        self._press_position = QPointF()
+        self._picked_glyph = False
+        self._drag_px = 0.0
 
         # TODO(Azaam): Enable the two lines, when resuming Grid optimization
         # Adding observer only on active camera, for zoom-scale calculation.
@@ -153,11 +186,15 @@ class Viewport(QVTKRenderWindowInteractor):
     def set_scene(self, data: SceneData):
         self.mesh = MeshView(data.mesh)
         self.cloud = TargetCloudView(data.targets, data.scores)
-        self.glyphs = CameraGlyphs(data.plan)
 
-        for view in (self.mesh, self.cloud, self.glyphs):
+        for view in (self.mesh, self.cloud):
             view.add_to(self.renderer)
 
+        self._rebuild_glyphs(data.plan)
+
+        self._targets = np.asarray(data.targets, dtype=np.float64)
+        self._surface_picker.AddPickList(self.mesh.actor)
+        self._point_picker.AddPickList(self.cloud.actor)
         self._mouse_picker.AddPickList(self.mesh.actor)
         for glyph_actor in self.glyphs.actors:
             self._mouse_picker.AddPickList(glyph_actor)
@@ -233,6 +270,37 @@ class Viewport(QVTKRenderWindowInteractor):
             self.cloud.set_occlusion(mask)
             self.render()
 
+    def set_route_selection(self, selected: set[int] | None, shown: set[str] | None = None):
+        """Paint the route on the camera glyphs; None gives their colours back.
+
+        `shown`, when given, is the plan ids of the only cameras drawn at all:
+        every other one in the scene is switched off rather than dimmed.
+        """
+        if self.has_scene and self.glyphs is not None:
+            self.glyphs.set_route(selected, shown)
+            self.render()
+
+    # -- Target inspection ---------------------------------------------
+
+    def show_target_overlay(
+        self,
+        report: TargetReport,
+        camera_positions,
+        diagonal: float,
+        options: OverlayOptions,
+    ):
+        """Draw the picked target's sector rose and the rays out to its observers."""
+        if not self.has_scene:
+            return
+
+        self._overlay.show(self.renderer, report, camera_positions, diagonal, options)
+        self.render()
+
+    def clear_target_overlay(self):
+        """Take the target overlay down, leaving the rest of the scene alone."""
+        self._overlay.clear()
+        self.render()
+
     def set_grid_visible(self, visible: bool):
         """Show/Hide the floor grid."""
         # self.grid_visible = visible
@@ -277,19 +345,30 @@ class Viewport(QVTKRenderWindowInteractor):
         # NOTE(Adam): The only renderer objects that need to be fully rebuilt
         #             when the plan changes are the camera glyphs. The mesh and
         #             cloud are unaffected by the plan.
+        self._rebuild_glyphs(SCENE_STORE.scene.plan)
+        self.render()
+
+    def _rebuild_glyphs(self, plan):
+        """Put one frustum per viewpoint in the scene, and only one.
+
+        The old actors come off the renderer first. Both the scene load and a
+        plan change come through here, and they overlap: the store announces
+        the plan before set_scene runs, so a set of glyphs is already in the
+        renderer by the time the scene arrives. Left there, that set is drawn
+        for the life of the window while every route colour and every
+        visibility switch lands on the set that replaced it.
+        """
         if self.glyphs is not None:
             for glyph_actor in self.glyphs.actors:
                 self._mouse_picker.DeletePickList(glyph_actor)
 
             self.glyphs.remove_from(self.renderer)
 
-        self.glyphs = CameraGlyphs(SCENE_STORE.scene.plan)
+        self.glyphs = CameraGlyphs(plan)
         self.glyphs.add_to(self.renderer)
 
         for glyph_actor in self.glyphs.actors:
             self._mouse_picker.AddPickList(glyph_actor)
-
-        self.render()
 
     def set_selected_camera_position(self, info: CameraInfo | None):
         if info is not None:
@@ -398,8 +477,16 @@ class Viewport(QVTKRenderWindowInteractor):
         """
         Lock mouse on Right Click, Left Click & Middle Click, and handle mouse-picking dispatch.
         """
+        # Where the gesture started, and how far it has travelled since. A
+        # left click that never travels is a pick; one that does is the user
+        # swinging the view around, and picks nothing.
+        self._press_position = ev.position()
+        self._drag_px = 0.0
+        self._picked_glyph = False
+
         # NOTE(Adam): Early-return here handles camera-click vs viewport manip on left-click
         if (ev.button() == Qt.MouseButton.LeftButton) and self._pick_camera_glyph(ev):
+            self._picked_glyph = True
             super().mousePressEvent(ev)
             return
 
@@ -421,6 +508,13 @@ class Viewport(QVTKRenderWindowInteractor):
             & (Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton | Qt.MouseButton.MiddleButton)
         ):
             self._mouse_lock_exit()
+
+        if (
+            ev.button() == Qt.MouseButton.LeftButton
+            and not self._picked_glyph
+            and self._drag_px <= PICK_DRAG_SLOP_PX
+        ):
+            self._pick_target(self._press_position)
 
     def mouseMoveEvent(self, ev: QMouseEvent):
         """
@@ -447,6 +541,10 @@ class Viewport(QVTKRenderWindowInteractor):
             abs(delta.y()) <= self._WARP_ECHO_EPSILON
         ):
             return
+
+        # How far the gesture has travelled, past the warp echo: what tells a
+        # click meant as a pick from one meant to swing the view around.
+        self._drag_px += abs(delta.x()) + abs(delta.y())
 
         # Accumulate relative delta onto virtual local position
         self._mouse_virtual_local_pos += delta
@@ -517,11 +615,7 @@ class Viewport(QVTKRenderWindowInteractor):
         if self.glyphs is None:
             return False
 
-        # NOTE(Adam): Qt uses the top-left origin.
-        #             VTK uses OpenGL coordinates - bottom-left origin.
-        dpr = self.devicePixelRatioF()  # Handle window DPI scaling
-        x = int(ev.position().x() * dpr)
-        y = self.GetRenderWindow().GetSize()[1] - int(ev.position().y() * dpr) - 1
+        x, y = self._display_position(ev.position())
         self._mouse_picker.Pick(x, y, 0, self.renderer)
 
         actor = self._mouse_picker.GetActor()
@@ -542,6 +636,90 @@ class Viewport(QVTKRenderWindowInteractor):
         self.camera_picked.emit(camera_id)
 
         return True
+
+    def _display_position(self, position: QPointF) -> tuple[int, int]:
+        """A Qt widget position as the render window's own pixel coordinates."""
+        # NOTE(Adam): Qt uses the top-left origin.
+        #             VTK uses OpenGL coordinates - bottom-left origin.
+        dpr = self.devicePixelRatioF()  # Handle window DPI scaling
+        x = int(position.x() * dpr)
+        y = self.GetRenderWindow().GetSize()[1] - int(position.y() * dpr) - 1
+
+        return x, y
+
+    def _pick_target(self, position: QPointF) -> bool:
+        """
+        Select the surface target under the cursor.
+
+        Emits `target_picked` with its row in the cloud, or `target_cleared`
+        when the click landed on nothing. Returns whether a target was found.
+        """
+        index = self._target_under(position)
+
+        if index is None:
+            self.target_cleared.emit()
+            return False
+
+        self.target_picked.emit(index)
+
+        return True
+
+    def _target_under(self, position: QPointF) -> int | None:
+        if self._targets is None or not len(self._targets):
+            return None
+
+        x, y = self._display_position(position)
+
+        # The mesh goes first, so a click only ever reaches what it can see.
+        self._surface_picker.Pick(x, y, 0, self.renderer)
+        if self._surface_picker.GetActor() is not None:
+            return self._within_reach(
+                self._nearest_target(self._surface_picker.GetPickPosition()), x, y
+            )
+
+        # No mesh under the cursor: either it is hidden, or the click missed
+        # the model. Either way the cloud is all that is left to hit.
+        self._point_picker.Pick(x, y, 0, self.renderer)
+        if self._point_picker.GetActor() is None:
+            return None
+
+        point_id = int(self._point_picker.GetPointId())
+        if 0 <= point_id < len(self._targets):
+            return self._within_reach(point_id, x, y)
+
+        return self._within_reach(self._nearest_target(self._point_picker.GetPickPosition()), x, y)
+
+    def _nearest_target(self, world_position) -> int:
+        """The target closest to a point on the surface."""
+        offsets = self._targets - np.asarray(world_position, dtype=np.float64)
+
+        return int(np.argmin(np.einsum("ij,ij->i", offsets, offsets)))
+
+    def _within_reach(self, index: int, x: int, y: int) -> int | None:
+        """The target, unless the click landed too far away to have meant it.
+
+        Picking off the surface hands back whichever target is nearest the
+        point that was hit, and on bare mesh the nearest one can be metres
+        off. Held to a radius around the cursor, a click on nothing stays
+        nothing, and the selection is let go instead of jumping.
+        """
+        target_x, target_y = self._display_of_world(self._targets[index])
+        reach = PICK_TARGET_RADIUS_PX * self.devicePixelRatioF()
+
+        if float(np.hypot(target_x - x, target_y - y)) > reach:
+            return None
+
+        return index
+
+    def _display_of_world(self, world_position) -> tuple[float, float]:
+        """A point in the scene as the render window's own pixel coordinates."""
+        self.renderer.SetWorldPoint(
+            float(world_position[0]), float(world_position[1]), float(world_position[2]), 1.0
+        )
+        self.renderer.WorldToDisplay()
+        display_x, display_y, _ = self.renderer.GetDisplayPoint()
+
+        return display_x, display_y
 
     # -- Window events ---------------------------------------------------
 
