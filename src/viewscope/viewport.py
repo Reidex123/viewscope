@@ -34,7 +34,7 @@ from viewscope.data.store import SCENE_STORE
 from viewscope.scene.camera import CameraMode, SceneCameraController
 from viewscope.scene.gizmos import CameraGlyphs, CameraModeGizmo, CameraOutline, FloorGrid
 from viewscope.scene.stats import FieldStats
-from viewscope.scene.target_gizmos import TargetOverlay
+from viewscope.scene.target_gizmos import TargetOverlay, observer_colour, weight_lut
 from viewscope.scene.target_report import TargetReport
 from viewscope.scene.views import MeshView, TargetCloudView
 
@@ -90,6 +90,9 @@ class Viewport(QVTKRenderWindowInteractor):
 
         self._targets = None
         self._overlay = TargetOverlay()
+        #: The same table the overlay's rays and scalar bar read, so a camera
+        #: glyph and the ray out to it land on one colour.
+        self._weight_lut = weight_lut()
         self._mode = MODE_ALL
 
         self._camera_mode = CameraMode.LOOK_AT
@@ -294,11 +297,13 @@ class Viewport(QVTKRenderWindowInteractor):
             return
 
         self._overlay.show(self.renderer, report, camera_positions, diagonal, options)
+        self._colour_observers(report, options.colour_by)
         self.render()
 
     def clear_target_overlay(self):
         """Take the target overlay down, leaving the rest of the scene alone."""
         self._overlay.clear()
+        self.glyphs.set_observer_colours(None)
         self.render()
 
     def set_grid_visible(self, visible: bool):
@@ -327,11 +332,12 @@ class Viewport(QVTKRenderWindowInteractor):
         # INVARIANT: The glyphs should not be uninitialized at this stage!
         assert self.glyphs is not None
 
+        self.glyphs.set_selected(None if info is None else info.index)
+        self.selected_outline.remove_from(self.renderer)
+
         if info is not None:
-            self.glyphs.set_actor_colour_by_index(info.index)
             self.set_selected_camera_position(info)
 
-            self.selected_outline.remove_from(self.renderer)
             if self.selected_camera_pos != (0, 0, 0):
                 self.selected_outline.build(self.renderer, self.selected_camera_pos)
 
@@ -622,9 +628,6 @@ class Viewport(QVTKRenderWindowInteractor):
         if actor is None:
             return False
 
-        # NOTE(AZAAM): This method works too.
-        # self.glyphs.set_actor_colour(actor)
-
         # NOTE(Adam): With the scene mesh added to the pick list,
         #       this will correctly return None when clicking on the mesh,
         #       therefore blocking glyph selections through the mesh.
@@ -720,6 +723,31 @@ class Viewport(QVTKRenderWindowInteractor):
         display_x, display_y, _ = self.renderer.GetDisplayPoint()
 
         return display_x, display_y
+
+    def _colour_observers(self, report: TargetReport, colour_by: str):
+        """Give every camera that sees the target the colour of its own ray.
+
+        The ray says which camera made a sector strong; wearing the same
+        colour, the frustum out in the scene says where that camera is
+        without the eye having to follow the line back.
+        """
+        top_camera = None if report.top_observer is None else report.top_observer.camera_index
+
+        self.glyphs.set_observer_colours(
+            {
+                observer.camera_index: observer_colour(
+                    observer, colour_by, self._weight_lut, top_camera
+                )
+                for observer in report.observers
+            }
+        )
+
+    def toggle_glyph_wireframe(self, bool):
+        """Toggle between the solid and wireframe representation for CameraGlyph.
+        Render scene as soon as bool updates."""
+        self.glyphs.wireframe_enabled = bool
+        self.glyphs._refresh()
+        self.render()
 
     # -- Window events ---------------------------------------------------
 
