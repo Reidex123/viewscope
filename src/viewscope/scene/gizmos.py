@@ -147,8 +147,7 @@ class CameraGlyphs:
         #: Camera index -> colour, for the observers of the picked target.
         self._observers: dict[int, tuple[float, float, float]] = {}
         self._outline: type = CameraOutline
-        # self.new_camera_id = None
-        self.wireframe_enabled: bool = True
+        self.wireframe_enabled: bool = False
 
     @property
     def actors(self) -> list[vtk.vtkActor]:
