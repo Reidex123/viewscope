@@ -54,6 +54,8 @@ class MainWindow(QMainWindow):
         *,
         expected_viewpoints: int | None = None,
         defer_load: bool = False,
+        load_photo_mesh: bool = True,
+        full_resolution_mesh: bool = False,
     ):
         """
         Build the shell and, unless the load is deferred, start reading the bundle.
@@ -62,6 +64,14 @@ class MainWindow(QMainWindow):
         checked while loading. Pass defer_load=True to leave the loader idle:
         the startup screen uses that to connect to its signals before the first
         one is emitted, then calls self.loader.start() itself.
+
+        Pass load_photo_mesh=False to stay on the simplified mesh: the
+        full-resolution model is the bulk of a bundle's memory, and the startup
+        screen offers it as a choice for machines that cannot hold it.
+
+        Pass full_resolution_mesh=True to read that model as it was shipped,
+        with its textures at their own size and the disk cache untouched. It
+        costs a good deal more memory, and every load pays the slow parse.
         """
         super().__init__()
         self.setWindowTitle("ViewScope")
@@ -92,6 +102,8 @@ class MainWindow(QMainWindow):
 
         # Reads the full-resolution model, once, for every panel that draws it.
         self.photo_loader = None
+        self.load_photo_mesh = load_photo_mesh
+        self.full_resolution_mesh = full_resolution_mesh
 
         self.camera_viewport = CameraViewport(self)
         self.display_panel = DisplayPanel()
@@ -399,6 +411,10 @@ class MainWindow(QMainWindow):
         if self.photo_loader is not None and self.photo_loader.isRunning():
             return
 
+        if not self.load_photo_mesh:
+            self.photo_mesh_finished.emit(False)
+            return
+
         path = find_photo_mesh(data_dir)
         if path is None:
             self.photo_mesh_finished.emit(False)
@@ -406,7 +422,7 @@ class MainWindow(QMainWindow):
 
         self._stop_photo_loader()
 
-        self.photo_loader = PhotoMeshLoader(path, self)
+        self.photo_loader = PhotoMeshLoader(path, self, full_resolution=self.full_resolution_mesh)
         self.photo_loader.loaded.connect(self._on_photo_mesh)
         self.photo_loader.failed.connect(self._on_photo_mesh_failed)
         self.photo_loader.progress.connect(self.photo_mesh_progress)

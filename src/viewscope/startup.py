@@ -17,6 +17,7 @@ from pathlib import Path
 from PySide6.QtCore import QProcess, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QDialog,
     QFileDialog,
     QFrame,
@@ -37,8 +38,23 @@ from viewscope.config import APP_NAME, ORG_NAME, Project
 from viewscope.data.loader import STAGE_COUNT
 from viewscope.data.validate import validate_required_files
 from viewscope.dialogs.build_dialog import BuildBundleDialog
+from viewscope.scene.photo_mesh import PhotoMeshLoader
 
 CARD_SPACING = 10
+
+# The memory budgets the page offers. LOW stops at the simplified mesh, which
+# is what the great bulk of a bundle's footprint is spent on. MEDIUM adds the
+# photographed model, with its textures capped on the way in. HIGH takes that
+# model exactly as it was shipped, textures at their own size. MEDIUM and HIGH
+# are both cached, each under its own variant, so the slow parse is paid once
+# per budget rather than once per open.
+#
+# The labels name the experience rather than the number of gigabytes behind it;
+# what each one actually costs is on the button's tooltip, where it can be said
+# in a full sentence.
+QUALITY_LOW = "Low"
+QUALITY_MEDIUM = "Medium"
+QUALITY_HIGH = "High"
 
 STYLESHEET = f"""
 #startupPage {{
@@ -110,6 +126,25 @@ STYLESHEET = f"""
 }}
 #addCard:hover {{
     background: {config.CARD};
+    border-color: {config.ACCENT};
+    color: {config.ACCENT};
+}}
+#qualityButton {{
+    background: {config.CARD};
+    border: 1px solid {config.CARD_BORDER};
+    border-radius: 6px;
+    color: {config.MUTED};
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    padding: 4px 10px;
+}}
+#qualityButton:hover {{
+    border-color: {config.CARD_BORDER_HOVER};
+    color: {config.INK};
+}}
+#qualityButton:checked {{
+    background: {config.TRACK};
     border-color: {config.ACCENT};
     color: {config.ACCENT};
 }}
@@ -291,6 +326,7 @@ class StartupWindow(QWidget):
         tagline.setObjectName("tagline")
         tagline.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        page.addLayout(self._quality_toggle())
         page.addStretch(3)
         page.addWidget(title)
         page.addSpacing(12)
@@ -325,6 +361,62 @@ class StartupWindow(QWidget):
         for project in (*self.shipped, *self._saved_projects()):
             self._add_card(project)
         self._fit_project_list()
+
+    def _quality_toggle(self) -> QHBoxLayout:
+        """The memory budget, in the top right corner. Full quality by default."""
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addStretch(1)
+
+        self.quality_group = QButtonGroup(self)
+        self.quality_group.setExclusive(True)
+        self.quality_buttons = {}
+
+        cap = PhotoMeshLoader.MAX_TEXTURE_DIM
+        tips = {
+            QUALITY_LOW: config.tooltip(
+                "Requires around 600MB",
+                "The simplified planning mesh on its own. "
+                "Every panel draws the shape of the site rather than the "
+                "surface the survey photographed.",
+            ),
+            QUALITY_MEDIUM: config.tooltip(
+                "Requires around 6GB",
+                "Adds the photographed model and its textures capped at "
+                f"{cap}px. The first open of a project parses it. Every open "
+                "after that reads it back from the cache. "
+                "This is ideal for laptops with 8GB RAM",
+            ),
+            QUALITY_HIGH: config.tooltip(
+                "Requires around 10GB",
+                "The photographed model exactly as it was shipped, textures at "
+                "their own full size. The sharpest picture and the heaviest on "
+                "the GPU. "
+                "Ideal for high end computers",
+            ),
+        }
+        for label in (QUALITY_LOW, QUALITY_MEDIUM, QUALITY_HIGH):
+            button = QPushButton(label)
+            button.setObjectName("qualityButton")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setToolTip(tips[label])
+            self.quality_group.addButton(button)
+            self.quality_buttons[label] = button
+            row.addWidget(button)
+
+        self.quality_buttons[QUALITY_MEDIUM].setChecked(True)
+        return row
+
+    @property
+    def load_photo_mesh(self) -> bool:
+        """Whether a project opened now should read the full-resolution model."""
+        return not self.quality_buttons[QUALITY_LOW].isChecked()
+
+    @property
+    def full_resolution_mesh(self) -> bool:
+        """Whether that model should come in uncapped and uncached."""
+        return self.quality_buttons[QUALITY_HIGH].isChecked()
 
     def _project_list(self) -> QScrollArea:
         """The cards, in a scroller so a long list cannot push the page apart."""
@@ -635,6 +727,7 @@ class StartupWindow(QWidget):
         self.bar.setValue(0)
         self.bar.show()
         self.add_button.setEnabled(False)
+        self._enable_quality(False)
 
         self._pending_project = project
         self._open_timer.start(0)
@@ -649,6 +742,8 @@ class StartupWindow(QWidget):
             project.data_dir,
             expected_viewpoints=project.expected_viewpoints,
             defer_load=True,
+            load_photo_mesh=self.load_photo_mesh,
+            full_resolution_mesh=self.full_resolution_mesh,
         )
         self.viewer = viewer
 
@@ -677,7 +772,13 @@ class StartupWindow(QWidget):
         full-resolution model may still be streaming in behind it. Switch the
         bar to percentage mode for that second phase rather than reveal the
         viewer while it's still loading textures.
+
+        On the light budget there is no second phase - the viewer is already on
+        its way up by the time this runs - so the bar is left as it is.
         """
+        if not self.load_photo_mesh:
+            return
+
         self.status.setText("Loading full-resolution model...")
         self.bar.setRange(0, 100)
         self.bar.setValue(0)
@@ -719,11 +820,17 @@ class StartupWindow(QWidget):
 
         self._reset_page("Select a project to open it.")
 
+    def _enable_quality(self, enabled: bool):
+        """The budget is read when a project opens, so it is frozen while one does."""
+        for button in self.quality_buttons.values():
+            button.setEnabled(enabled)
+
     def _reset_page(self, message: str):
         """Put the page back the way it looks before anything was picked."""
         for card in self.cards.values():
             card.set_busy(False)
         self.add_button.setEnabled(True)
+        self._enable_quality(True)
         self.build_button.setEnabled(self.builder is None)
         self.bar.hide()
         self.status.setText(message)
