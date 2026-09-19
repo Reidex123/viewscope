@@ -19,7 +19,7 @@ from vtkmodules.vtkInteractionWidgets import (
 
 import viewscope.qt  # noqa: F401
 import viewscope_core as vc
-from viewscope.camera.structs import CameraInfo
+from viewscope.camera import CameraInfo
 from viewscope.config import (
     BACKGROUND,
     MODE_ALL,
@@ -31,11 +31,23 @@ from viewscope.config import (
     YFOV_DEG,
     OverlayOptions,
 )
-from viewscope.data.scene import SceneData
-from viewscope.data.store import SCENE_STORE
-from viewscope.scene import transform
-from viewscope.scene.camera import CameraMode, SceneCameraController
-from viewscope.scene.flight_path import FlightPathLine
+from viewscope.data import SCENE_STORE, SceneData
+from viewscope.scene import (
+    CameraMode,
+    FieldStats,
+    FlightPathLine,
+    MeshView,
+    PhotoMesh,
+    SceneCameraController,
+    StillRenderer,
+    TargetCloudView,
+    TargetOverlay,
+    TargetReport,
+    UnobservedTargets,
+    observer_colour,
+    transform,
+    weight_lut,
+)
 from viewscope.scene.gizmos import (
     CameraGlyphs,
     CameraModeGizmo,
@@ -43,12 +55,6 @@ from viewscope.scene.gizmos import (
     FloorGrid,
     TranslationGizmo,
 )
-from viewscope.scene.photo_mesh import PhotoMesh
-from viewscope.scene.stats import FieldStats
-from viewscope.scene.still import StillRenderer
-from viewscope.scene.target_gizmos import TargetOverlay, observer_colour, weight_lut
-from viewscope.scene.target_report import TargetReport
-from viewscope.scene.views import MeshView, TargetCloudView, UnobservedTargets
 
 
 class Viewport(QVTKRenderWindowInteractor):
@@ -1089,33 +1095,3 @@ class Viewport(QVTKRenderWindowInteractor):
 
         self.camera_mode_gizmo.move(x, y)
         self.camera_mode_gizmo.raise_()
-
-    # TODO(Azaam): Uncomment method, when resuming Grid optimization
-    # def _on_camera_modified(self, obj, event) -> None:
-    #     """Event handler for calculate zoom level + grid scale, and applying it to grid actor.
-    #     The zoom level is based on cameras distance to focal point.
-    #     Grid Scale changes whenever the distance variable changes by a factor of 10."""
-    #     active_camera = self.renderer.GetActiveCamera()
-    #     distance = active_camera.GetDistance()  # From camera to focal point.
-
-    #     if distance == self.zoom_distance:
-    #         return  # Exit handler if no "zooming" was performed.
-    #     self.zoom_distance = distance
-
-    #     # - Change scale in steps of powers-of-10
-    #     raw_scale = distance / self.initial_camera_distance
-    #     exponent = floor(log10(raw_scale))
-    #     zoom_scale = 1.5**exponent  # Scale factor based on distance
-    #     # Used Deepseek for the calculation of the scale factor. (I changed bases though)
-
-    #     if zoom_scale == self.grid_scale:
-    #         return  # Exit handler if in same scale bucket/step.
-    #     self.grid_scale = zoom_scale  # Update grid scale based on zoom scale
-
-    #     ## Rebuild grid in scene
-    #     if self.floor_grid is not None:
-    #         self.floor_grid.remove_from(self.renderer)  # Remove old grid
-    #         if self.grid_visible:  # Only build if the checkbox is checked in DisplayPanel
-    #             self.floor_grid = FloorGrid(
-    #                 self.renderer, 100, self.grid_origin_point, self.grid_scale
-    #             )

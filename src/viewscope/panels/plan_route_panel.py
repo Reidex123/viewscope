@@ -29,9 +29,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from viewscope.data.flight_path import FlightPath
-from viewscope.data.route import RouteStatus
-from viewscope.panels.route_charts import CoverageBar, SectorBars
+from viewscope.data import FlightPath, RouteStatus
+
+from .route_charts import CoverageBar, SectorBars
 
 IDLE_HINT = "Plan a route to choose which viewpoints get flown."
 PLANNING_HINT = "Click a camera in the 3D view to take it out of the route, or put it back."

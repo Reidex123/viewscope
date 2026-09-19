@@ -32,10 +32,17 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QFrame
 
-from viewscope.data.flight_metrics import Drone, Flight, Turn, estimate_flight, sharpest_turn
-from viewscope.data.flight_path import FlightPath
-from viewscope.data.route import SECTORS, RouteStatus
-from viewscope.panels.route_charts import CoverageBar, SectorBars
+from viewscope.data import (
+    SECTORS,
+    Drone,
+    Flight,
+    FlightPath,
+    RouteStatus,
+    Turn,
+    estimate_flight,
+    sharpest_turn,
+)
+from viewscope.panels import CoverageBar, SectorBars
 
 #: The charts are drawn far larger than they are printed, so the print has
 #: something to be sharp with. Pixels.

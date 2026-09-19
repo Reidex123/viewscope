@@ -22,25 +22,36 @@ from PySide6.QtWidgets import (
 )
 
 import viewscope_core as vc
-from viewscope.camera.structs import CameraInfo
-from viewscope.CameraViewport import CameraViewport
+from viewscope.camera import CameraInfo
+from viewscope.camera_viewport import CameraViewport
 from viewscope.config import APP_NAME, DATA_DIR, MODES, ORG_NAME, ROUTE_FILENAME
-from viewscope.data.flight_path import Obstacle, plan_path
-from viewscope.data.loader import SceneLoader
-from viewscope.data.route import RoutePlan, load_route
-from viewscope.data.scene import SceneData
-from viewscope.data.store import SCENE_STORE
-from viewscope.dialogs.file_error_dialog import FileErrorDialog
-from viewscope.DisplayPanel import DisplayPanel
-from viewscope.MetricsPanel import MetricsPanel
-from viewscope.panels.plan_route_panel import PlanRoutePanel
-from viewscope.panels.target_panel import TargetPanel
-from viewscope.panels.viewpoints_panel import ViewpointsPanel
+from viewscope.data import (
+    SCENE_STORE,
+    Obstacle,
+    RoutePlan,
+    SceneData,
+    SceneLoader,
+    load_route,
+    plan_path,
+)
+from viewscope.dialogs import FileErrorDialog
+from viewscope.panels import (
+    DisplayPanel,
+    MetricsPanel,
+    PlanRoutePanel,
+    TargetPanel,
+    ViewpointsPanel,
+)
 from viewscope.route_report import write_report
-from viewscope.scene.photo_mesh import PhotoMesh, PhotoMeshLoader, find_photo_mesh
-from viewscope.scene.subset_scores import SubsetScores
-from viewscope.scene.target_report import TargetReport, TargetReports
-from viewscope.scene.visibility import TargetVisibility
+from viewscope.scene import (
+    PhotoMesh,
+    PhotoMeshLoader,
+    SubsetScores,
+    TargetReport,
+    TargetReports,
+    TargetVisibility,
+    find_photo_mesh,
+)
 from viewscope.viewport import Viewport
 
 

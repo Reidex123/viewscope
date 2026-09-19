@@ -11,8 +11,7 @@ from vtkmodules.qt.QVTKRenderWindowInteractor import (
 from vtkmodules.util import numpy_support as vtknp
 
 import viewscope.qt  # noqa: F401
-from viewscope.camera.controller import CameraController
-from viewscope.camera.structs import CameraInfo
+from viewscope.camera import CameraController, CameraInfo
 from viewscope.config import (
     BACKGROUND,
     MODE_ALL,
@@ -22,9 +21,8 @@ from viewscope.config import (
     STILL_WIDTH,
     YFOV_DEG,
 )
-from viewscope.data.scene import SceneData
-from viewscope.scene.photo_mesh import PhotoMesh
-from viewscope.scene.views import MeshView
+from viewscope.data import SceneData
+from viewscope.scene import MeshView, PhotoMesh
 
 
 def still_scale(shown: int, width: int) -> int:

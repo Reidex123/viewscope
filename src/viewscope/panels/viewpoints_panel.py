@@ -22,8 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from viewscope.data.store import SCENE_STORE
-from viewscope.dialogs.addcamera_dialog import AddCameraDialog
+from viewscope.data import SCENE_STORE
+from viewscope.dialogs import AddCameraDialog
 
 
 class ViewpointsPanel(QWidget):
