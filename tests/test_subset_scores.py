@@ -6,6 +6,8 @@ checked: every case is compared against `viewscope_core` itself rather than
 against numbers written down here.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -184,3 +186,32 @@ def test_an_unscored_viewpoint_does_not_stop_the_rest_being_rescored(subset):
     assert subset.values("score_8", [0, CAMERAS + 7]) == pytest.approx(
         subset.values("score_8", [0])
     )
+
+
+# -----------------------------------------------------------------------------
+# A table with nothing in it
+# -----------------------------------------------------------------------------
+
+
+def empty_scores():
+    """A bundle whose target is seen by nobody: a real, if unusual, table."""
+    return SimpleNamespace(
+        offsets=np.array([0, 0], dtype=np.int64),
+        camera_index=np.zeros(0, dtype=np.int32),
+        weight=np.zeros(0, dtype=np.float32),
+        sector_8=np.zeros(0, dtype=np.int8),
+        sector_4=np.zeros(0, dtype=np.int8),
+    )
+
+
+def test_a_target_nobody_observes_scores_zero_rather_than_raising():
+    """There is nothing to reduce over, which is an answer, not an error."""
+    subset = SubsetScores(empty_scores(), target_count=1, camera_count=2)
+
+    assert subset.values("score_8", [0, 1]) == pytest.approx([0.0])
+
+
+def test_a_target_nobody_observes_has_no_diversity_either():
+    subset = SubsetScores(empty_scores(), target_count=1, camera_count=2)
+
+    assert subset.values("diversity_8", [0, 1]) == pytest.approx([0.0])

@@ -60,11 +60,23 @@ source = ["src"]
 omit = [
     "*/__init__.py",
     "src/viewscope_core/*",
+    # The bundle-building CLI: a separate entry point, not part of the app.
+    "src/viewscope/build_bundle.py",
+    # These need a live OpenGL context: both bind a QVTKRenderWindowInteractor,
+    # and MainWindow constructs one of each in __init__, so none of the three
+    # can be built without a display.
+    "src/viewscope/viewport.py",
+    "src/viewscope/CameraViewport.py",
+    "src/viewscope/window.py",
 ]
 
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
+exclude_also = [
+    # Only runs when a module is executed as a script, never under pytest.
+    "if __name__ == .__main__.:",
+]
 
 # Fails pytest if the total coverage falls below this percentage
-fail_under = 70
+fail_under = 100

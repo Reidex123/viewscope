@@ -131,7 +131,9 @@ class SubsetScores:
     def _score(self, key, weights, starts, kept, sectors: int) -> np.ndarray:
         """The mean over sectors of the best weight left in each."""
         cells = np.zeros(self._targets * sectors, dtype=np.float64)
-        if len(starts):
+        # `starts` always holds at least the opening zero, so it is the rows
+        # themselves that say whether there is anything to reduce over.
+        if len(weights):
             # Struck-out rows weigh nothing rather than being removed, so the
             # runs the reduction steps over stay where they were.
             best = np.maximum.reduceat(np.where(kept, weights, 0.0), starts)

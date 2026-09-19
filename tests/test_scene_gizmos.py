@@ -392,3 +392,156 @@ def test_the_flag_colour_is_one_the_score_ramp_cannot_produce():
 
     assert red > 0.5 and blue > 0.5, "magenta is red and blue together"
     assert green < 0.3, "with no green, which the ramp is full of"
+
+
+# -----------------------------------------------------------------------------
+# Putting the frustums on a renderer and taking them off
+# -----------------------------------------------------------------------------
+
+
+def test_every_frustum_is_an_actor(plan):
+    glyphs = CameraGlyphs(plan)
+
+    assert len(glyphs.actors) == len(plan.ids)
+    assert set(glyphs.actors) == set(glyphs.glyphs)
+
+
+def test_adding_puts_every_frustum_on_the_renderer(plan):
+    glyphs, renderer = CameraGlyphs(plan), vtk.vtkRenderer()
+
+    glyphs.add_to(renderer)
+
+    assert renderer.GetActors().GetNumberOfItems() == len(plan.ids)
+
+
+def test_removing_takes_them_all_off_and_forgets_them(plan):
+    glyphs, renderer = CameraGlyphs(plan), vtk.vtkRenderer()
+    glyphs.add_to(renderer)
+
+    glyphs.remove_from(renderer)
+
+    assert renderer.GetActors().GetNumberOfItems() == 0
+    assert glyphs.glyphs == {}
+    assert glyphs.actors == []
+
+
+# -----------------------------------------------------------------------------
+# Looking a frustum up
+# -----------------------------------------------------------------------------
+
+
+def test_an_actor_reports_the_camera_it_draws(plan):
+    glyphs = CameraGlyphs(plan)
+
+    assert glyphs.camera_id_of_actor(glyph(glyphs, 2)) == 2
+
+
+def test_an_actor_that_is_not_a_frustum_names_no_camera(plan):
+    """The picker hands over whatever was under the cursor, model included."""
+    glyphs = CameraGlyphs(plan)
+
+    assert glyphs.camera_id_of_actor(vtk.vtkActor()) is None
+
+
+def test_a_camera_reports_the_actor_that_draws_it(plan):
+    glyphs = CameraGlyphs(plan)
+
+    assert glyphs.actor_of_id(2) is glyph(glyphs, 2)
+
+
+def test_a_camera_that_is_not_in_the_plan_has_no_actor(plan):
+    glyphs = CameraGlyphs(plan)
+
+    assert glyphs.actor_of_id(99) is None
+
+
+# -----------------------------------------------------------------------------
+# The observers of the picked target
+# -----------------------------------------------------------------------------
+
+
+def test_an_observer_wears_the_colour_it_is_given(plan):
+    glyphs = CameraGlyphs(plan)
+
+    glyphs.set_observer_colours({1: (0.5, 0.25, 0.75)})
+
+    assert worn(glyphs, 1)[2] == pytest.approx((0.5, 0.25, 0.75))
+
+
+def test_dropping_the_target_takes_the_observer_colours_off(plan):
+    glyphs = CameraGlyphs(plan)
+    glyphs.set_observer_colours({1: (0.5, 0.25, 0.75)})
+
+    glyphs.set_observer_colours(None)
+
+    assert worn(glyphs, 1)[2] != pytest.approx((0.5, 0.25, 0.75))
+
+
+def test_the_selected_camera_outranks_the_observer_colouring(plan):
+    """Gold means "this is the one you picked" and nothing may take it."""
+    glyphs = CameraGlyphs(plan)
+    glyphs.set_observer_colours({1: (0.5, 0.25, 0.75)})
+
+    glyphs.set_selected(1)
+
+    assert worn(glyphs, 1)[2] == pytest.approx(CameraGlyphs.COLOUR_ACTIVE)
+
+
+# -----------------------------------------------------------------------------
+# Cameras the user added
+# -----------------------------------------------------------------------------
+
+
+def test_a_camera_the_user_added_is_drawn_in_its_own_colour(plan):
+    glyphs = CameraGlyphs(plan)
+
+    glyphs.set_new_cameras({"vp002"})
+    glyphs._refresh()
+
+    assert worn(glyphs, 2)[2] == pytest.approx(CameraGlyphs.COLOUR_NEW)
+    assert worn(glyphs, 0)[2] != pytest.approx(CameraGlyphs.COLOUR_NEW)
+
+
+def test_clearing_the_new_cameras_puts_their_own_colours_back(plan):
+    glyphs = CameraGlyphs(plan)
+    glyphs.set_new_cameras({"vp002"})
+
+    glyphs.set_new_cameras(None)
+    glyphs._refresh()
+
+    assert glyphs.new_ids == set()
+    assert worn(glyphs, 2)[2] != pytest.approx(CameraGlyphs.COLOUR_NEW)
+
+
+def test_the_route_outranks_the_new_camera_colouring(plan):
+    """While planning, in or out of the route is the only thing worth seeing."""
+    glyphs = CameraGlyphs(plan)
+    glyphs.set_new_cameras({"vp002"})
+
+    glyphs.set_route({2})
+
+    assert worn(glyphs, 2)[2] == pytest.approx(ROUTE_SELECTED_COLOUR)
+
+
+# -----------------------------------------------------------------------------
+# Showing only what a loaded plan names
+# -----------------------------------------------------------------------------
+
+
+def test_showing_only_some_ids_switches_the_rest_off(plan):
+    glyphs = CameraGlyphs(plan)
+
+    glyphs.show_only({"vp000", "vp002"})
+
+    assert glyph(glyphs, 0).GetVisibility() == 1
+    assert glyph(glyphs, 1).GetVisibility() == 0
+    assert glyph(glyphs, 2).GetVisibility() == 1
+
+
+def test_showing_everything_again_switches_them_all_back_on(plan):
+    glyphs = CameraGlyphs(plan)
+    glyphs.show_only({"vp000"})
+
+    glyphs.show_only(None)
+
+    assert all(actor.GetVisibility() == 1 for actor in glyphs.actors)

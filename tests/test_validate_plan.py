@@ -2,7 +2,8 @@
 
 import json
 
-from viewscope.data import validate_plan
+from viewscope.data import validate
+from viewscope.data.validate import validate_plan
 
 
 def write_plan(folder, viewpoints):
@@ -36,3 +37,27 @@ def test_a_missing_plan_reports_instead_of_raising(tmp_path):
 
     assert ok is False
     assert "does not exist" in message
+
+
+# -----------------------------------------------------------------------------
+# The path predicates
+# -----------------------------------------------------------------------------
+
+
+def test_a_file_that_is_there_validates(tmp_path):
+    path = tmp_path / "scene.obj"
+    path.write_text("v 0 0 0\n")
+
+    assert validate.validate_file_exists(path) is True
+
+
+def test_a_file_that_is_not_there_does_not(tmp_path):
+    assert validate.validate_file_exists(tmp_path / "missing.obj") is False
+
+
+def test_a_folder_that_is_there_validates(tmp_path):
+    assert validate.validate_folder_exists(tmp_path) is True
+
+
+def test_a_folder_that_is_not_there_does_not(tmp_path):
+    assert validate.validate_folder_exists(tmp_path / "missing") is False

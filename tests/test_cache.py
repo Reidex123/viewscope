@@ -100,3 +100,151 @@ def test_the_read_still_works_without_a_progress_callback(tmp_path):
     cached = cache.cached_actors(obj, mtl)
     assert cached is not None
     assert len(cache.read_geometry_cache(cached)) == 1
+
+
+# -----------------------------------------------------------------------------
+# The fingerprint
+# -----------------------------------------------------------------------------
+
+
+def test_a_source_with_no_material_still_fingerprints(tmp_path):
+    """Not every OBJ has an MTL beside it."""
+    obj = tmp_path / "model.obj"
+    obj.write_text("v 0 0 0\n")
+
+    cache.write_cache(obj, None, [(polydata(), image())])
+
+    assert cache.cached_actors(obj, None) is not None
+
+
+def test_a_material_that_is_not_there_is_left_out_of_the_fingerprint(tmp_path):
+    """A path may be named without the file existing; that must not raise."""
+    obj = tmp_path / "model.obj"
+    obj.write_text("v 0 0 0\n")
+    missing = tmp_path / "gone.mtl"
+
+    cache.write_cache(obj, missing, [(polydata(), image())])
+
+    assert cache.cached_actors(obj, missing) is not None
+
+
+def test_changing_the_material_makes_the_old_set_stale(tmp_path):
+    obj, mtl = source(tmp_path)
+    cache.write_cache(obj, mtl, [(polydata(), image())])
+
+    mtl.write_text("newmtl material_0\nKd 1 0 0\n")
+
+    assert cache.cached_actors(obj, mtl) is None
+
+
+# -----------------------------------------------------------------------------
+# Where a loaded texture came from
+# -----------------------------------------------------------------------------
+
+
+def test_a_texture_read_from_a_file_reports_that_file(tmp_path):
+    png = tmp_path / "skin.png"
+    writer = vtk.vtkPNGWriter()
+    writer.SetFileName(str(png))
+    writer.SetInputData(image())
+    writer.Write()
+
+    reader = vtk.vtkPNGReader()
+    reader.SetFileName(str(png))
+    texture = vtk.vtkTexture()
+    texture.SetInputConnection(reader.GetOutputPort())
+
+    assert cache.texture_source_path(texture) == png
+
+
+def test_no_texture_has_no_source():
+    assert cache.texture_source_path(None) is None
+
+
+def test_a_texture_built_in_memory_has_no_source():
+    """SetInputData leaves no reader behind to ask."""
+    texture = vtk.vtkTexture()
+    texture.SetInputData(image())
+
+    assert cache.texture_source_path(texture) is None
+
+
+def test_a_reader_that_has_no_file_name_yet_has_no_source():
+    reader = vtk.vtkPNGReader()
+    texture = vtk.vtkTexture()
+    texture.SetInputConnection(reader.GetOutputPort())
+
+    assert cache.texture_source_path(texture) is None
+
+
+# -----------------------------------------------------------------------------
+# Caches that are not hits
+# -----------------------------------------------------------------------------
+
+
+def test_a_source_that_has_never_been_cached_is_not_a_hit(tmp_path):
+    obj, mtl = source(tmp_path)
+
+    assert cache.cached_actors(obj, mtl) is None
+
+
+def test_a_manifest_that_will_not_parse_is_not_a_hit(tmp_path):
+    """A half-written file from an interrupted run reads as absent."""
+    obj, mtl = source(tmp_path)
+    cache.write_cache(obj, mtl, [(polydata(), image())])
+
+    manifest = next((tmp_path / ".viewscope_cache").glob("*.json"))
+    manifest.write_text("{ not json")
+
+    assert cache.cached_actors(obj, mtl) is None
+
+
+def test_a_set_missing_one_of_its_geometry_files_is_not_a_hit(tmp_path):
+    """Partial is worse than absent: it would load half a model."""
+    obj, mtl = source(tmp_path)
+    cache.write_cache(obj, mtl, [(polydata(), image()), (polydata(), image())])
+
+    next((tmp_path / ".viewscope_cache").glob("*.1.vtp")).unlink()
+
+    assert cache.cached_actors(obj, mtl) is None
+
+
+# -----------------------------------------------------------------------------
+# Actors with no texture
+# -----------------------------------------------------------------------------
+
+
+def test_an_actor_with_no_texture_is_cached_without_one(tmp_path):
+    obj, mtl = source(tmp_path)
+
+    cache.write_cache(obj, mtl, [(polydata(), None)])
+
+    cached = cache.cached_actors(obj, mtl)
+    assert cached is not None
+    assert cached[0].texture_path is None
+
+
+def test_an_untextured_actor_reads_back_bare(tmp_path):
+    obj, mtl = source(tmp_path)
+    cache.write_cache(obj, mtl, [(polydata(), None)])
+
+    cached = cache.cached_actors(obj, mtl)
+    assert cached is not None
+
+    actors = cache.read_geometry_cache(cached)
+    assert actors[0].GetTexture() is None
+    assert actors[0].GetMapper().GetInput().GetNumberOfCells()
+
+
+def test_an_actor_whose_texture_file_has_gone_reads_back_bare(tmp_path):
+    """The geometry is still good, so the set is still worth loading."""
+    obj, mtl = source(tmp_path)
+    cache.write_cache(obj, mtl, [(polydata(), image())])
+    cached = cache.cached_actors(obj, mtl)
+    assert cached is not None
+
+    texture_path = cached[0].texture_path
+    assert texture_path is not None
+    texture_path.unlink()
+
+    assert cache.read_geometry_cache(cached)[0].GetTexture() is None

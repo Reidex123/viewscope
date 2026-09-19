@@ -348,3 +348,82 @@ def test_an_index_that_is_not_a_target_reports_nothing():
 
     assert reports.report(99, 8) is None
     assert reports.report(-1, 8) is None
+
+
+# -----------------------------------------------------------------------------
+# The single best observer, and the weights by camera
+# -----------------------------------------------------------------------------
+
+
+def test_the_top_observer_is_the_heaviest_of_them_all():
+    """Not the same as a sector winner: one per target, not one per wedge."""
+    positions = np.array([camera_at(0.0), camera_at(90.0), camera_at(180.0)])
+    report = build_report(0, ORIGIN, UP, positions, np.arange(3), 8)
+
+    top = report.top_observer
+    assert top is not None
+    assert top is report.observers[0]
+    assert top.weight == max(observer.weight for observer in report.observers)
+
+
+def test_a_target_nobody_observes_has_no_top_observer():
+    report = build_report(0, ORIGIN, UP, np.zeros((0, 3)), np.zeros(0, dtype=np.int64), 8)
+
+    assert report.top_observer is None
+
+
+def test_the_weights_map_is_keyed_by_plan_row_not_by_position():
+    """Colouring things that are not rows needs the camera's own index."""
+    positions = np.array([camera_at(0.0), camera_at(120.0)])
+    report = build_report(0, ORIGIN, UP, positions, np.array([4, 9]), 8)
+
+    weights = report.weights()
+
+    assert set(weights) == {4, 9}
+    assert weights == {observer.camera_index: observer.weight for observer in report.observers}
+
+
+def test_the_weights_map_is_empty_when_nothing_observes():
+    report = build_report(0, ORIGIN, UP, np.zeros((0, 3)), np.zeros(0, dtype=np.int64), 8)
+
+    assert report.weights() == {}
+
+
+# -----------------------------------------------------------------------------
+# Sectors that fall outside the compass
+# -----------------------------------------------------------------------------
+
+
+def test_an_observer_in_no_such_sector_is_left_out_of_the_summary():
+    """A four sector summary must not be handed an eight sector index."""
+    summary = summarise_sectors([observer(sector=6), observer(sector=1)], sector_count=4)
+
+    assert [wedge.observers for wedge in summary] == [0, 1, 0, 0]
+
+
+def test_a_negative_sector_is_left_out_too():
+    summary = summarise_sectors([observer(sector=-1)], sector_count=4)
+
+    assert all(wedge.observers == 0 for wedge in summary)
+
+
+def test_an_added_camera_is_asked_of_the_live_visibility_rather_than_assumed():
+    """The shipped matrix stops at the plan it was built for; past that the
+    recomputed mask is what decides, and the report is not flagged."""
+
+    class Live:
+        """Stands in for TargetVisibility: camera 1 sees only the far target."""
+
+        def mask_for(self, camera):
+            return np.array([False, True])
+
+    visible = np.array([[True, False]])  # one row, for camera 0 only
+    scene = scene_with([camera_at(0.0), camera_at(180.0)], visibility=visible)
+
+    near = TargetReports(scene, visibility=Live()).report(0, 8)
+    far = TargetReports(scene, visibility=Live()).report(1, 8)
+    assert near is not None and far is not None
+
+    assert [o.camera_index for o in near.observers] == [0]
+    assert [o.camera_index for o in far.observers] == [1]
+    assert not near.assumed_visibility and not far.assumed_visibility

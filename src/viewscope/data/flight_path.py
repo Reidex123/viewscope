@@ -577,7 +577,9 @@ def _resample(stretch: np.ndarray, spacing: float) -> np.ndarray:
 
     legs = np.linalg.norm(np.diff(deduped, axis=0), axis=1)
     total = float(legs.sum())
-    if total <= 0.0:
+    # Belt and braces: the dedup above leaves no two neighbours in the same
+    # place, so every leg is already longer than nothing and this cannot fire.
+    if total <= 0.0:  # pragma: no cover
         return deduped[[0, -1]]
 
     # Share the points out over the whole stretch, so a long way round is cut

@@ -6,12 +6,16 @@ order, by name and by co-ordinate, and every figure the panel would have
 shown. Drawing it onto a page is Qt's, and is not re-tested.
 """
 
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
 import pytest
 
-from viewscope.data import Drone, FlightPath, RouteStatus, estimate_flight, sharpest_turn
+import viewscope.route_report as rr
+from viewscope.data.flight_metrics import Drone, estimate_flight, sharpest_turn
+from viewscope.data.flight_path import FlightPath
+from viewscope.data.route import RouteStatus
 from viewscope.route_report import CHART_URLS, report_html
 
 IDS = ("vp000", "vp001", "vp002", "vp003")
@@ -223,3 +227,137 @@ def test_a_document_without_charts_leaves_the_images_out(html):
 
     assert CHART_URLS["coverage"] not in document
     assert "The path, by viewpoint" in document
+
+
+# -----------------------------------------------------------------------------
+# The lines the report is built out of
+# -----------------------------------------------------------------------------
+
+
+def test_an_empty_route_stands_nowhere():
+    empty = RouteStatus(planning=True, selected=(), labels=(), camera_count=4, sectors=(0,) * 8)
+
+    assert "nothing to stand anywhere" in rr._sector_note(empty)
+
+
+def test_a_route_measured_against_no_plan_stands_nowhere():
+    """Sectors are empty when there was no plan to measure."""
+    none = RouteStatus(planning=True, selected=(), labels=(), camera_count=0)
+
+    assert "nothing to stand anywhere" in rr._sector_note(none)
+
+
+def test_hops_left_crossing_the_model_are_owned_up_to(path):
+    crossed = replace(path, crossings=2, detours=0)
+
+    assert "2 hops cross the model" in rr._clearance(crossed)
+    assert "no way round or over was found" in rr._clearance(crossed)
+
+
+def test_a_single_crossing_is_not_pluralised(path):
+    assert "1 hop cross" in rr._clearance(replace(path, crossings=1))
+
+
+def test_a_path_that_climbed_says_how_many_hops_went_over(path):
+    line = rr._clearance(replace(path, detours=0, climbs=3))
+
+    assert "nothing flies through the model" in line
+    assert "3 flown over" in line
+
+
+def test_a_path_that_both_went_round_and_climbed_says_both(path):
+    line = rr._clearance(replace(path, detours=2, climbs=3))
+
+    assert "2 flown round, 3 flown over" in line
+
+
+def test_a_straight_clear_path_says_only_that(path):
+    line = rr._clearance(replace(path, detours=0, climbs=0))
+
+    assert line == "nothing flies through the model"
+
+
+def test_an_unmeasured_path_says_so(path):
+    assert "not measured" in rr._clearance(replace(path, checked=False))
+
+
+# -----------------------------------------------------------------------------
+# Times as a pilot would say them
+# -----------------------------------------------------------------------------
+
+
+def test_under_a_minute_is_said_in_seconds():
+    assert rr._clock(42.4) == "42 s"
+
+
+def test_a_minute_or_more_is_said_in_minutes_and_seconds():
+    assert rr._clock(75.0) == "1 min 15 s"
+    assert rr._clock(3600.0) == "60 min 00 s"
+
+
+def test_the_seconds_are_padded_so_the_times_line_up():
+    assert rr._clock(65.0) == "1 min 05 s"
+
+
+def test_a_negative_time_is_no_time_at_all():
+    assert rr._clock(-5.0) == "0 s"
+
+
+# -----------------------------------------------------------------------------
+# Writing the document out
+# -----------------------------------------------------------------------------
+
+
+def test_a_report_is_written_as_a_pdf(app, tmp_path, status, path):
+    """End to end, through Qt: the charts are drawn and the page is printed."""
+    out = tmp_path / "report.pdf"
+
+    written = rr.write_report(
+        out,
+        name="north_face",
+        bundle="kiri",
+        status=status,
+        path=path,
+        ids=IDS,
+        positions=POSITIONS,
+    )
+
+    assert written == out
+    assert out.exists()
+    assert out.read_bytes().startswith(b"%PDF")
+
+
+def test_the_report_carries_the_panels_own_charts(app, status):
+    images = rr._chart_images(status)
+
+    assert set(images) == set(CHART_URLS)
+    assert all(not image.isNull() for image in images.values())
+
+
+def test_the_charts_are_drawn_on_paper_rather_than_on_the_dock(app, status):
+    """A dark surround would print as a black frame round the chart."""
+    from PySide6.QtCore import Qt
+
+    images = rr._chart_images(status)
+
+    corner = images["coverage"].pixelColor(1, 1)
+    assert corner == Qt.GlobalColor.white
+
+
+def test_a_report_can_be_written_for_a_drone_that_is_not_the_default(app, tmp_path, status, path):
+    from dataclasses import replace as replaced
+
+    out = tmp_path / "report.pdf"
+
+    rr.write_report(
+        out,
+        name="north_face",
+        bundle="kiri",
+        status=status,
+        path=path,
+        ids=IDS,
+        positions=POSITIONS,
+        drone=replaced(Drone(), cruise_speed_ms=3.0),
+    )
+
+    assert out.exists()
