@@ -40,6 +40,58 @@ OCCLUDED_COLOUR = (0.42, 0.43, 0.47)
 # carry one keep it in this subfolder, beside its .mtl and textures.
 PHOTO_MESH_DIR = "Mesh"
 
+# An exported still is the camera view blown up, not the camera view at the
+# size the dock happens to be: the dock is a few hundred pixels across, and a
+# simulated photograph is worth having at something nearer print size. VTK
+# renders it in tiles, so this width costs render time and memory rather than
+# screen, and the shot keeps the aspect the dock is showing.
+STILL_WIDTH = 3840
+
+# A ceiling on that blow-up. A dock dragged narrow would otherwise ask for a
+# grid of tiles deep enough to stall the window for the length of a coffee.
+STILL_MAX_SCALE = 12
+
+# -- the drone the route is costed against ---------------------------------
+
+# The energy figure in the route report is an estimate, and an estimate is
+# only as good as what it assumes, so everything it assumes is here rather
+# than buried in the arithmetic. These are a small survey quadrotor: change
+# them and the report changes with them, because the report prints them.
+
+#: All-up mass, in kilograms: airframe, battery and camera.
+DRONE_MASS_KG = 1.5
+
+#: How many rotors, and how long each blade is, in metres. Together they give
+#: the disc the thrust is made over, which is what sets the hover power.
+DRONE_ROTORS = 4
+DRONE_ROTOR_RADIUS_M = 0.12
+
+#: Air density at sea level, in kg/m^3.
+AIR_DENSITY = 1.225
+
+#: What the rotors make of the power they are given, and what the motors and
+#: speed controllers make of the power the battery gives them. Momentum
+#: theory gives the ideal; these are what a real aircraft gets for it.
+DRONE_FIGURE_OF_MERIT = 0.70
+DRONE_DRIVE_EFFICIENCY = 0.80
+
+#: Everything that draws power without lifting anything: flight controller,
+#: radio, camera, gimbal. In watts.
+DRONE_AVIONICS_W = 12.0
+
+#: How fast it flies between viewpoints and how hard it accelerates, in m/s
+#: and m/s^2. Survey speeds, not sport ones.
+DRONE_CRUISE_SPEED_MS = 5.0
+DRONE_ACCELERATION_MS2 = 2.0
+
+#: How long it holds still at each viewpoint to take the photograph, in
+#: seconds. A survey shot is taken stopped, not on the fly.
+DRONE_DWELL_S = 2.0
+
+#: A typical pack, in watt-hours: 4 cells at 5,000 mAh. The report says what
+#: share of one the flight would take, which is the number a pilot plans by.
+DRONE_BATTERY_WH = 74.0
+
 # -- target inspection -----------------------------------------------------
 
 # Sector counts the inspector offers. Eight is the default; four is the
@@ -99,11 +151,48 @@ TARGET_MARKER_FRACTION = 0.0024
 
 # A viewpoint in the route, and one the user has taken out of it. Only ever
 # worn while planning is on; outside it the glyphs keep their own colours.
-ROUTE_SELECTED_COLOUR = (0.16, 0.50, 0.95)
+# Cyan reads off the model at a glance where a blue sat against the shadowed
+# side of it; the one taken out stays grey and out of the way.
+ROUTE_SELECTED_COLOUR = (0.15, 0.85, 1.00)
 ROUTE_UNSELECTED_COLOUR = (0.34, 0.35, 0.39)
 
 #: What a saved route is called, before the user renames it.
 ROUTE_FILENAME = "route.json"
+
+# -- targets nothing can see -----------------------------------------------
+
+# Magenta, and magenta for a reason: the score colouring is a hue ramp from
+# blue through green and yellow to red, so magenta is the one hue it can
+# never produce. These are the only targets on screen while they are up, but
+# they are up against the model behind them, and nothing on it is this colour.
+UNOBSERVED_COLOUR = (1.00, 0.10, 0.80)
+
+# Drawn larger than the cloud they were picked out of. With the rest of the
+# targets gone what is left can be sparse and far off, and a gap worth seeing
+# should not come down to a single pixel.
+UNOBSERVED_POINT_GROWTH = 3.0
+
+
+# -- camera glyphs ---------------------------------------------------------
+
+# How solid a frustum is drawn when it is not the one being looked at and not
+# an observer of the picked target - which is to say, nearly all of them.
+#
+# The two representations want different numbers for the same result. A
+# wireframe is a few thin lines and already reads clearly when it is faint;
+# filling one in at the same strength leaves a smudge with no edge to it,
+# which is what made the solid frustums so hard to make out.
+GLYPH_SOLID_OPACITY = 0.85
+GLYPH_WIREFRAME_OPACITY = 0.2
+
+
+# -- flight path -----------------------------------------------------------
+
+#: The line drawn from frustum to frustum through the route, in the order it
+#: would be flown. Red, to sit apart from everything else in the scene: the
+#: route blues, the gold of the selected camera and the target colours.
+FLIGHT_PATH_COLOUR = (0.94, 0.15, 0.18)
+FLIGHT_PATH_WIDTH = 3.0
 
 
 # How far a click may travel, in total, before it counts as a drag of the

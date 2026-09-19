@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import cast
 
 import numpy as np
@@ -34,6 +35,7 @@ from viewscope.data.scene import SceneData
 from viewscope.data.store import SCENE_STORE
 from viewscope.scene import transform
 from viewscope.scene.camera import CameraMode, SceneCameraController
+from viewscope.scene.flight_path import FlightPathLine
 from viewscope.scene.gizmos import (
     CameraGlyphs,
     CameraModeGizmo,
@@ -46,7 +48,7 @@ from viewscope.scene.stats import FieldStats
 from viewscope.scene.still import StillRenderer
 from viewscope.scene.target_gizmos import TargetOverlay, observer_colour, weight_lut
 from viewscope.scene.target_report import TargetReport
-from viewscope.scene.views import MeshView, TargetCloudView
+from viewscope.scene.views import MeshView, TargetCloudView, UnobservedTargets
 
 
 class Viewport(QVTKRenderWindowInteractor):
@@ -64,6 +66,13 @@ class Viewport(QVTKRenderWindowInteractor):
 
     camera_changed = Signal(CameraInfo)
     camera_picked = Signal(int)
+
+    # A camera has been placed by clicking: where it stands, and the point
+    # on the model it was aimed at.
+    camera_placed = Signal(object, object)
+    # How far placing a camera has got: 0 asks for the standpoint, 1 for
+    # what it looks at, and -1 means placing has finished or been dropped.
+    placing_changed = Signal(int)
 
     # A surface target was clicked, by its row in the target cloud.
     target_picked = Signal(int)
@@ -129,6 +138,21 @@ class Viewport(QVTKRenderWindowInteractor):
         self.selected_outline = CameraOutline()
         self.selected_camera_pos = (0, 0, 0)
 
+        # Nesting depth of held(): while it is above nought, render() only
+        # notes that a draw is owed.
+        self._held = 0
+
+        # Where a camera being placed by clicking will stand, once the
+        # first click has said. None while nothing is being placed.
+        self._placing = False
+        self._standpoint = None
+
+        self.flight_path = FlightPathLine()
+        self.unobserved = UnobservedTargets()
+        # While the targets nothing can see are flagged, they are the only
+        # ones drawn, so the cloud they were picked out of comes off.
+        self._flagging_unobserved = False
+
         # Camera Orientation Widget configuration
         self.orientation_widget = vtkCameraOrientationWidget()
         self.orientation_widget.SetParentRenderer(self.renderer)
@@ -192,7 +216,28 @@ class Viewport(QVTKRenderWindowInteractor):
         self.Finalize()
 
     def render(self):
+        if self._held:
+            return
+
         self.GetRenderWindow().Render()
+
+    @contextmanager
+    def held(self):
+        """Draw once at the end of a change, rather than after every part of it.
+
+        Each thing the viewport is told draws the scene again, which is right
+        for one change and wasteful for a dozen. Route planning makes a dozen
+        on every click - the glyph colours, the flight path, the flagged
+        targets, the heat map, the occlusion - and a draw of this scene costs
+        more than all of them put together.
+        """
+        self._held += 1
+        try:
+            yield
+        finally:
+            self._held -= 1
+            if not self._held:
+                self.render()
 
     # -- Scene ---------------------------------------------------------
 
@@ -266,10 +311,26 @@ class Viewport(QVTKRenderWindowInteractor):
             elif self._mesh_visible:
                 self.mesh.show_textured()
 
-        if self.cloud is not None:
-            self.cloud.set_visible(mode in (MODE_TARGETS, MODE_ALL))
+        self._apply_cloud_visibility()
 
         self.render()
+
+    def _apply_cloud_visibility(self):
+        """Show the targets the mode and the flagging between them call for.
+
+        Two things have a say. The render mode decides whether targets are
+        drawn at all - a mode showing only the mesh draws neither the cloud
+        nor the flags, which would otherwise be points hanging in front of it
+        with nothing to belong to. Flagging then decides which of them: the
+        ones nothing can see, or all of them.
+        """
+        if self.cloud is None:
+            return
+
+        showing_targets = self._render_mode in (MODE_TARGETS, MODE_ALL)
+
+        self.cloud.set_visible(showing_targets and not self._flagging_unobserved)
+        self.unobserved.set_visible(showing_targets)
 
     @property
     def _mesh_visible(self) -> bool:
@@ -312,10 +373,120 @@ class Viewport(QVTKRenderWindowInteractor):
         self.render()
         return stats
 
+    def set_scalar_values(self, field: str, values, value_range) -> FieldStats | None:
+        """Colour the cloud by values worked out here, on a scale held fixed."""
+        if not self.has_scene or self.cloud is None:
+            return None
+
+        stats = self.cloud.set_values(field, values, value_range)
+        self.render()
+
+        return stats
+
     def set_point_size(self, size: int):
         if self.has_scene and self.cloud is not None:
             self.cloud.set_point_size(size)
+            # The flags sit on the cloud, so they grow with it.
+            self.unobserved.set_point_size(size)
             self.render()
+
+    # -- placing a camera by clicking ----------------------------------
+
+    @property
+    def placing(self) -> bool:
+        """Whether clicks are being read as placing a camera rather than picking."""
+        return self._placing
+
+    def begin_placement(self):
+        """Take the next two clicks on the model as a camera and what it faces."""
+        if not self.has_scene:
+            return
+
+        self._placing = True
+        self._standpoint = None
+        self.placing_changed.emit(0)
+
+    def cancel_placement(self):
+        """Give the clicks back to picking, placing nothing."""
+        if not self._placing:
+            return
+
+        self._placing = False
+        self._standpoint = None
+        self.placing_changed.emit(-1)
+
+    def _place_click(self, position: QPointF) -> bool:
+        """One click of a placement. Returns whether it landed on the model.
+
+        The first says where the camera stands, the second what it looks at.
+        A click that misses the model is not a point in space - a ray through
+        empty air has no depth to it - so it counts for nothing and the step
+        is asked for again.
+        """
+        landed = self._surface_under(position)
+        if landed is None:
+            return False
+
+        point, normal = landed
+
+        if self._standpoint is None:
+            # Out along the surface it was clicked on, so the camera stands
+            # off the model rather than buried in it, at the distance the
+            # scoring likes best.
+            self._standpoint = point + normal * vc.constants.MU_RHO_M
+            self.placing_changed.emit(1)
+
+            return True
+
+        standpoint, self._standpoint = self._standpoint, None
+        self._placing = False
+        self.placing_changed.emit(-1)
+        self.camera_placed.emit(standpoint, point)
+
+        return True
+
+    def _surface_under(self, position: QPointF):
+        """Where on the model a click landed, and which way the model faces there."""
+        x, y = self._display_position(position)
+        self._surface_picker.Pick(x, y, 0, self.renderer)
+        if self._surface_picker.GetActor() is None:
+            return None
+
+        point = np.asarray(self._surface_picker.GetPickPosition(), dtype=np.float64)
+        normal = np.asarray(self._surface_picker.GetPickNormal(), dtype=np.float64)
+
+        length = float(np.linalg.norm(normal))
+        if not np.isfinite(length) or length < 1e-9:
+            # A degenerate face has no outward direction to stand off along,
+            # so the camera goes straight up instead of nowhere at all.
+            normal = np.array([0.0, 0.0, 1.0])
+        else:
+            normal = normal / length
+
+        return point, normal
+
+    def show_unobserved(self, targets):
+        """Draw these targets - the ones nothing can see - and only these.
+
+        The rest of the cloud comes off while they are up. Picking a handful
+        of points out of sixty thousand by colour alone is hard however they
+        are coloured, and what is being looked for is where the gaps are:
+        with everything else gone, what is left on screen is the answer.
+        """
+        if not self.has_scene:
+            return
+
+        self._flagging_unobserved = True
+        self.unobserved.show(self.renderer, targets)
+        self._apply_cloud_visibility()
+        self.render()
+
+    def clear_unobserved(self):
+        """Take the flags off and give the rest of the targets back."""
+        self._flagging_unobserved = False
+        self.unobserved.remove_from(self.renderer)
+        self._apply_cloud_visibility()
+        self.render()
 
     def set_glyphs_visible(self, visible: bool):
         if self.has_scene and self.glyphs is not None:
@@ -328,15 +499,24 @@ class Viewport(QVTKRenderWindowInteractor):
             self.cloud.set_occlusion(mask)
             self.render()
 
-    def set_route_selection(self, selected: set[int] | None, shown: set[str] | None = None):
-        """Paint the route on the camera glyphs; None gives their colours back.
-
-        `shown`, when given, is the plan ids of the only cameras drawn at all:
-        every other one in the scene is switched off rather than dimmed.
-        """
+    def set_route_selection(self, selected: set[int] | None):
+        """Paint the route on the camera glyphs; None gives their colours back."""
         if self.has_scene and self.glyphs is not None:
-            self.glyphs.set_route(selected, shown)
+            self.glyphs.set_route(selected)
             self.render()
+
+    def show_flight_path(self, positions):
+        """Draw the red line through these viewpoints, in this order."""
+        if not self.has_scene:
+            return
+
+        self.flight_path.show(self.renderer, positions)
+        self.render()
+
+    def clear_flight_path(self):
+        """Take the flight path off the scene."""
+        self.flight_path.remove_from(self.renderer)
+        self.render()
 
     # -- Target inspection ---------------------------------------------
 
@@ -438,13 +618,19 @@ class Viewport(QVTKRenderWindowInteractor):
         for the life of the window while every route colour and every
         visibility switch lands on the set that replaced it.
         """
-        if self.glyphs is not None:
-            for glyph_actor in self.glyphs.actors:
+        previous = self.glyphs
+        if previous is not None:
+            for glyph_actor in previous.actors:
                 self._mouse_picker.DeletePickList(glyph_actor)
 
-            self.glyphs.remove_from(self.renderer)
+            previous.remove_from(self.renderer)
 
         self.glyphs = CameraGlyphs(plan)
+        if previous is not None:
+            # A new set starts on the defaults, which would quietly undo the
+            # display panel every time a camera was added.
+            self.glyphs.adopt_display(previous)
+
         self.glyphs.add_to(self.renderer)
 
         for glyph_actor in self.glyphs.actors:
@@ -601,7 +787,11 @@ class Viewport(QVTKRenderWindowInteractor):
         # super().mousePressEvent(ev)
 
         # NOTE(Adam): Early-return here handles camera-click vs viewport manip on left-click
-        if (ev.button() == Qt.MouseButton.LeftButton) and self._pick_camera_glyph(ev):
+        if (
+            ev.button() == Qt.MouseButton.LeftButton
+            and not self._placing
+            and self._pick_camera_glyph(ev)
+        ):
             self._picked_glyph = True
             super().mousePressEvent(ev)
             return
@@ -635,7 +825,13 @@ class Viewport(QVTKRenderWindowInteractor):
             and not self._picked_glyph
             and self._drag_px <= PICK_DRAG_SLOP_PX
         ):
-            self._pick_target(self._press_position)
+            # Placing a camera takes the clicks that would otherwise pick a
+            # target. Dragging still swings the view, so the model can be
+            # turned around between the two clicks.
+            if self._placing:
+                self._place_click(self._press_position)
+            else:
+                self._pick_target(self._press_position)
 
     def mouseMoveEvent(self, ev: QMouseEvent):
         """

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 from PySide6.QtCore import QByteArray, QSettings, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence
@@ -20,9 +21,11 @@ from PySide6.QtWidgets import (
     QStatusBar,
 )
 
+import viewscope_core as vc
 from viewscope.camera.structs import CameraInfo
 from viewscope.CameraViewport import CameraViewport
 from viewscope.config import APP_NAME, DATA_DIR, MODES, ORG_NAME, ROUTE_FILENAME
+from viewscope.data.flight_path import Obstacle, plan_path
 from viewscope.data.loader import SceneLoader
 from viewscope.data.route import RoutePlan, load_route
 from viewscope.data.scene import SceneData
@@ -33,7 +36,9 @@ from viewscope.MetricsPanel import MetricsPanel
 from viewscope.panels.plan_route_panel import PlanRoutePanel
 from viewscope.panels.target_panel import TargetPanel
 from viewscope.panels.viewpoints_panel import ViewpointsPanel
+from viewscope.route_report import write_report
 from viewscope.scene.photo_mesh import PhotoMesh, PhotoMeshLoader, find_photo_mesh
+from viewscope.scene.subset_scores import SubsetScores
 from viewscope.scene.target_report import TargetReport, TargetReports
 from viewscope.scene.visibility import TargetVisibility
 from viewscope.viewport import Viewport
@@ -84,17 +89,31 @@ class MainWindow(QMainWindow):
         self.reports = None  # TargetReports, likewise
         self.route = RoutePlan()
 
+        # Whether the flight path is drawn. It follows the route while it is
+        # up, so it is recomputed on every change rather than only on the
+        # click that switched it on.
+        self.flight_path_on = False
+
+        # The model as space the path has to stay out of. Built on the first
+        # path asked for and kept for the life of the scene.
+        self.obstacle = None
+
+        # Whether the targets nothing can see are flagged, and what the whole
+        # plan can see between it - which is what "nothing" means outside
+        # route planning. Counted once and kept, because it only moves when
+        # the plan does.
+        self.unobserved_on = False
+        self.plan_mask = None
+
+        # Rescores the targets for the cameras in the route, so the heat map
+        # answers what the route covers rather than what the plan does. None
+        # until a scene with a score table arrives.
+        self.subset_scores = None
+
         # What the whole route can see, while planning is on. Recounted on
         # every route change, because both the coverage line and the
         # occlusion colouring read it.
         self.route_mask = None
-
-        # When a plan was loaded from a file, the viewpoint ids it named.
-        # Every camera in the scene whose id is not one of them is switched
-        # off, so the scene holds that plan and nothing else, until another
-        # is loaded or the whole plan is asked for back. None while every
-        # viewpoint is on show.
-        self.route_shown: set[str] | None = None
 
         self.selected_camera = None
         self.selected_target: TargetReport | None = None
@@ -168,10 +187,14 @@ class MainWindow(QMainWindow):
         self.display_panel.grid_toggled.connect(self.viewport.set_grid_visible)
         self.display_panel.glyphs_toggled.connect(self.viewport.set_glyphs_visible)
         self.display_panel.glyph_wireframe_toggled.connect(self.viewport.toggle_glyph_wireframe)
+        self.display_panel.unobserved_toggled.connect(self._on_unobserved_toggled)
 
         # This updates the camera in FPV viewport
         # TODO(Adam): In future, I would prefer if camera_picked
         #             returned a CameraInfo and was wired into self._on_camera_changed.
+        self.viewpoints_panel.place_requested.connect(self.viewport.begin_placement)
+        self.viewport.placing_changed.connect(self._on_placing_changed)
+        self.viewport.camera_placed.connect(self._on_camera_placed)
         self.viewpoints_panel.camera_picked.connect(self.camera_viewport.show_camera)
         self.viewport.camera_picked.connect(self.camera_viewport.show_camera)
         self.viewport.camera_picked.connect(self.viewpoints_panel.select_row)
@@ -194,8 +217,8 @@ class MainWindow(QMainWindow):
         self.plan_route_panel.load_requested.connect(self.load_route_file)
         self.plan_route_panel.select_all_requested.connect(self._on_route_select_all)
         self.plan_route_panel.clear_requested.connect(self._on_route_clear)
-        self.plan_route_panel.camera_picked.connect(self.camera_viewport.show_camera)
-        self.plan_route_panel.camera_picked.connect(self.viewpoints_panel.select_row)
+        self.plan_route_panel.path_requested.connect(self._on_flight_path_toggled)
+        self.plan_route_panel.report_requested.connect(self.generate_route_report)
 
         SCENE_STORE.plan_changed.connect(self._on_plan_changed)
         self.camera_viewport.camera_changed.connect(self._on_camera_changed)
@@ -234,13 +257,15 @@ class MainWindow(QMainWindow):
 
         self.act_clear_target = QAction("Clear Target", self)
         self.act_clear_target.setShortcut(QKeySequence(Qt.Key.Key_Escape))
-        self.act_clear_target.setToolTip("Let go of the picked target (Esc)")
+        self.act_clear_target.setToolTip(
+            "Let go of the picked target, or stop placing a camera (Esc)"
+        )
         self.act_clear_target.triggered.connect(self.clear_target)
         self.act_clear_target.setEnabled(False)
 
         self.act_still = QAction("Render Still", self)
         self.act_still.setShortcut(QKeySequence("Ctrl+R"))
-        self.act_still.setToolTip("Render this view with pyrender and save it (Ctrl+R)")
+        self.act_still.setToolTip("Save the camera view as a high-resolution image (Ctrl+R)")
         self.act_still.triggered.connect(self.render_still)
 
         self.toggle_orientation = QAction("Toggle Orientation", self, checkable=True)
@@ -298,6 +323,17 @@ class MainWindow(QMainWindow):
         SCENE_STORE.set_scene(scene)
         self.visibility = TargetVisibility(scene)
         self.reports = TargetReports(scene, self.visibility)
+        # A new model is a new shape to fly around, and a new plan is a new
+        # answer to what nothing can see.
+        self.obstacle = None
+        self.plan_mask = None
+        # Another bundle's route.json is not this bundle's to overwrite.
+        self.route.forget_file()
+        self.subset_scores = (
+            None
+            if scene.scores is None
+            else SubsetScores(scene.scores, len(scene.targets), len(scene.plan.ids))
+        )
 
         self.viewport.set_scene(scene)
         self.camera_viewport.set_scene(scene)
@@ -320,8 +356,86 @@ class MainWindow(QMainWindow):
         if scene.data_dir is not None:
             self._load_photo_mesh(scene.data_dir)
 
+    # -- placing a camera by clicking ----------------------------------
+
+    def _on_placing_changed(self, step: int):
+        """Say what the next click will do, or that there is nothing to click for."""
+        # Escape is what stops it, and it shares the action that lets go of a
+        # picked target, so that action has to be live while placing.
+        self.act_clear_target.setEnabled(step >= 0 or self.selected_target is not None)
+
+        if step == 0:
+            self.statusBar().showMessage(
+                "Placing a camera: click the model where it should stand. Escape to stop."
+            )
+        elif step == 1:
+            self.statusBar().showMessage("Now click what it should look at. Escape to stop.")
+        else:
+            self.statusBar().clearMessage()
+
+    def _on_camera_placed(self, standpoint, target):
+        """Add the camera the user has just clicked out."""
+        try:
+            yaw, pitch = vc.look_at_angles(standpoint, target)
+        except ValueError:
+            # The two clicks landed on the same spot, so there is no direction
+            # to face. Nothing is added and the user is told why.
+            self.statusBar().showMessage(
+                "Those two clicks are the same point, so there is nothing to face", 5000
+            )
+            return
+
+        x, y, z = (float(v) for v in standpoint)
+        SCENE_STORE.add_camera((x, y, z), yaw, pitch)
+
+        position = f"{x:.1f}, {y:.1f}, {z:.1f}"
+        self.statusBar().showMessage(
+            f"Camera placed at {position}, facing {yaw:.0f} deg yaw, {pitch:.0f} deg pitch",
+            6000,
+        )
+
     def _on_field_changed(self, field):
-        self.metrics_panel.show_field(self.viewport.set_scalar_field(field))
+        self.metrics_panel.show_field(self._paint_field(field))
+
+    def _paint_field(self, field: str):
+        """Colour the targets by one field, for the route or for the plan.
+
+        While a route is being planned the heat map is worked out from the
+        cameras in it, on the plan's own scale: an empty route leaves every
+        target at the cold end, and each camera put back warms what it sees.
+        Outside planning, and for anything the rescorer cannot answer, the
+        column the bundle shipped is used as it always was.
+        """
+        if not self._rescoring(field):
+            return self.viewport.set_scalar_field(field)
+
+        assert self.subset_scores is not None  # _rescoring is the only route here
+
+        return self.viewport.set_scalar_values(
+            field,
+            self.subset_scores.values(field, self.route.selected),
+            self.subset_scores.full_range(field),
+        )
+
+    def _unscored(self, rows) -> int:
+        """How many of these viewpoints the bundle's score table cannot credit."""
+        if self.subset_scores is None:
+            return 0
+
+        return len(self.subset_scores.unscored(rows))
+
+    def _rescoring(self, field: str) -> bool:
+        """Whether the heat map should follow the route rather than the plan."""
+        return (
+            self.route.planning and self.subset_scores is not None and SubsetScores.handles(field)
+        )
+
+    def _refresh_heatmap(self):
+        """Repaint the targets, for when the route or the plan moves under them."""
+        if SCENE_STORE.scene is None or not self.display_panel.field.isEnabled():
+            return
+
+        self._on_field_changed(self.display_panel.field.currentText())
 
     def _on_camera_changed(self, info: CameraInfo | None):
         if SCENE_STORE.scene is None:
@@ -334,7 +448,6 @@ class MainWindow(QMainWindow):
         if info is not None:
             self.viewpoints_panel.select_row(info.index)
         self.target_panel.select_camera(None if info is None else info.index)
-        self.plan_route_panel.select_camera(None if info is None else info.index)
 
         camera_count = SCENE_STORE.camera_count
         self.statusBar().showMessage(
@@ -355,6 +468,22 @@ class MainWindow(QMainWindow):
             self.reports.forget()
         self._rebuild_target()
 
+        # A camera added to the plan can see things nothing could see before,
+        # so what the whole plan covers has to be counted again.
+        self.plan_mask = None
+
+        # The score table describes the plan the bundle shipped, and this is
+        # no longer that plan: the new camera has no rows to score by. That
+        # is a reason to credit it nothing, which the rescorer already does
+        # for any row past the table, and not a reason to throw the rescorer
+        # away: dropping it would put the heat map back on the shipped
+        # columns, where it answers what the whole plan covers no matter what
+        # is in the route, and the route would stop colouring anything at all.
+        if self.subset_scores is not None and self.route.planning:
+            self.statusBar().showMessage(
+                "The heat map counts nothing for a viewpoint the bundle never scored", 6000
+            )
+
         # on_plan_changed built fresh glyphs, which know nothing of the route.
         self.route.forget_beyond(SCENE_STORE.camera_count)
         self._refresh_route()
@@ -372,9 +501,11 @@ class MainWindow(QMainWindow):
 
     def render_still(self):
         """
-        Save a pyrender image of the shot the viewport is holding.
-        The window draws with VTK; this is the same view handed to pyrender,
-        which renders it offscreen at the size the viewport is showing.
+        Save the camera view as an image, at far more pixels than it is shown.
+        The shot is the one in the Camera View dock -- same viewpoint, same
+        model, same display mode -- drawn again in tiles at around
+        `STILL_WIDTH` across, so the exported photograph carries the detail
+        the dock has no room for.
         """
         if SCENE_STORE.scene is None:
             return
@@ -388,7 +519,7 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage("Rendering...")
         try:
-            colour = self.viewport.render_still()
+            colour = self.camera_viewport.render_still()
             if colour is None:
                 self.statusBar().showMessage("Nothing to render")
                 return
@@ -399,7 +530,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "ViewScope", f"Could not render the still.\n\n{exc}")
             return
 
-        self.statusBar().showMessage(f"Rendered {Path(path).name}", 5000)
+        height, width = colour.shape[:2]
+        self.statusBar().showMessage(f"Rendered {Path(path).name} at {width}x{height}", 5000)
 
     def _load_photo_mesh(self, data_dir: Path):
         """
@@ -504,7 +636,16 @@ class MainWindow(QMainWindow):
         self._rebuild_target()
 
     def clear_target(self):
-        """Let go of the picked target, in the panel and in the view."""
+        """Let go of whatever Escape should let go of.
+
+        Placing a camera first, because that is the thing with a click owed
+        on it: stopping halfway through would otherwise need the mouse.
+        """
+        if self.viewport.placing:
+            self.viewport.cancel_placement()
+            self.statusBar().showMessage("Placing stopped; no camera was added", 4000)
+            return
+
         if self.selected_target is None:
             return
 
@@ -543,7 +684,6 @@ class MainWindow(QMainWindow):
             return
 
         self.route.start(SCENE_STORE.camera_count)
-        self.route_shown = None
         self.plan_route_panel.show_saved(None)
         self._refresh_route()
         self.statusBar().showMessage(
@@ -575,19 +715,40 @@ class MainWindow(QMainWindow):
             [(entry.id, entry.position, entry.yaw_deg, entry.pitch_deg) for entry in entries]
         )
 
+        # The file names the route, not the scene: the viewpoints it lists go
+        # into the route and the rest of the plan stays where it is, out of
+        # the route and on screen. A viewpoint you cannot see is one you
+        # cannot click back in.
         self.route.select(rows)
         self.route.resume()
-        # The file names the plan on show: every other camera in the scene is
-        # switched off until the user asks for the rest back.
-        self.route_shown = {entry.id for entry in entries}
+        # Saving this route again writes back to the file it came out of,
+        # rather than starting the naming over at route.json.
+        self.route.came_from(path)
         self._refresh_route()
-        self.plan_route_panel.show_loaded(path, added)
+        self.plan_route_panel.show_loaded(path, added, self._unscored(rows))
         self.statusBar().showMessage(f"Planning the {len(rows)} viewpoints of {path.name}", 6000)
 
     def stop_route_planning(self):
-        """Write the route out, then leave planning. Cancelling keeps planning on."""
+        """Leave planning, with or without writing the route out first.
+
+        Stopping asks which of the two it is to be. Saving leaves planning
+        once the route is written; exiting leaves it and keeps nothing.
+        Backing out of either dialog keeps planning on.
+        """
         scene = SCENE_STORE.scene
         if scene is None or not self.route.planning:
+            return
+
+        save = self._ask_stop_choice()
+        if save is None:
+            self.statusBar().showMessage("Still planning", 4000)
+            return
+
+        if not save:
+            self.route.stop()
+            self._refresh_route()
+            self.plan_route_panel.show_saved(None)
+            self.statusBar().showMessage("Left planning: the route was not saved", 6000)
             return
 
         path = self._ask_route_path()
@@ -607,9 +768,45 @@ class MainWindow(QMainWindow):
         self.plan_route_panel.show_saved(written)
         self.statusBar().showMessage(f"Route saved to {written}", 6000)
 
+    def _ask_stop_choice(self):
+        """True to save the route, False to drop it, None to keep planning."""
+        ask = QMessageBox(self)
+        ask.setWindowTitle("ViewScope")
+        ask.setIcon(QMessageBox.Icon.NoIcon)
+        ask.setText("Stop planning the route?")
+        count = len(self.route)
+        lines = [f"The route has {count} viewpoint{'' if count == 1 else 's'}."]
+        if self.route.path is None:
+            lines.append("Exit leaves planning without saving it.")
+        else:
+            # Named, because this is the press that overwrites it.
+            lines.append(f"Saving writes back to {self.route.path.name}.")
+            lines.append("Exit leaves planning and that file as it is.")
+
+        ask.setInformativeText(" ".join(lines))
+
+        save = ask.addButton("Save route", QMessageBox.ButtonRole.AcceptRole)
+        leave = ask.addButton("Exit", QMessageBox.ButtonRole.DestructiveRole)
+        ask.setDefaultButton(save)
+        ask.exec()
+
+        clicked = ask.clickedButton()
+        if clicked is save:
+            return True
+        if clicked is leave:
+            return False
+
+        return None
+
     def _ask_route_path(self):
-        """Where to write the route, or None if the user changed their mind."""
-        suggested = Path(self.loader.data_dir) / ROUTE_FILENAME
+        """Where to write the route, or None if the user changed their mind.
+
+        Opens on the file the route belongs to -- the one it was loaded from,
+        or the one it was last saved to -- so a route read out of a file goes
+        back into it by pressing return. Anything else is a save-as, which is
+        the dialog's own business.
+        """
+        suggested = self.route.path or Path(self.loader.data_dir) / ROUTE_FILENAME
         chosen, _filter = QFileDialog.getSaveFileName(
             self, "Save route", str(suggested), "JSON (*.json)"
         )
@@ -639,14 +836,209 @@ class MainWindow(QMainWindow):
         )
 
     def _on_route_select_all(self):
-        """Put the whole plan in the route, and back on the screen with it."""
+        """Put the whole plan in the route."""
         self.route.select_all(SCENE_STORE.camera_count)
-        self.route_shown = None
         self._refresh_route()
 
     def _on_route_clear(self):
         self.route.clear()
         self._refresh_route()
+
+    # -- targets nothing can see ---------------------------------------
+
+    def _on_unobserved_toggled(self, flagged: bool):
+        self.unobserved_on = flagged
+        self._refresh_unobserved()
+
+    def _observed_mask(self):
+        """What can be seen, and by what, or None when nothing can say.
+
+        While a route is being planned the question is what the route covers,
+        so that taking a camera out shows the gap it leaves. Outside planning
+        it is the whole plan: the targets flagged are then the ones the
+        survey never covers, however it is flown.
+        """
+        if self.route.planning:
+            return self.route_mask
+
+        if self.plan_mask is None and self.visibility is not None:
+            try:
+                self.plan_mask = self.visibility.union_mask(range(SCENE_STORE.camera_count))
+            except Exception as exc:
+                self.statusBar().showMessage(f"Coverage unavailable: {exc}", 5000)
+                return None
+
+        return self.plan_mask
+
+    def _refresh_unobserved(self):
+        """Re-flag the targets nothing can see, after anything that moves them."""
+        scene = SCENE_STORE.scene
+        if not self.unobserved_on or scene is None:
+            self.viewport.clear_unobserved()
+            return
+
+        observed = self._observed_mask()
+        # Nothing to go on means nothing is known to be covered, so every
+        # target is flagged. That is the honest answer, not a blank screen.
+        missed = (
+            np.ones(len(scene.targets), dtype=bool) if observed is None else ~np.asarray(observed)
+        )
+
+        self.viewport.show_unobserved(scene.targets[missed])
+        self.statusBar().showMessage(
+            f"{int(missed.sum()):,} of {missed.size:,} targets have no observer"
+            f"{' in the route' if self.route.planning else ' in the plan'}",
+            5000,
+        )
+
+    # -- flight path ---------------------------------------------------
+
+    def _on_flight_path_toggled(self, shown: bool):
+        self.flight_path_on = shown
+        self._refresh_flight_path()
+
+    def _flight_path_rows(self) -> tuple[int, ...]:
+        """Which viewpoints the path runs through.
+
+        The route, once there is one worth flying. Before that - a scene just
+        opened, or every camera taken out again - the whole plan, so the
+        button says something the moment it is pressed rather than drawing
+        nothing and looking broken.
+        """
+        selected = self.route.selected
+        if len(selected) >= 2:
+            return selected
+
+        return tuple(range(SCENE_STORE.camera_count))
+
+    def _obstacle(self) -> Obstacle | None:
+        """The model as space to stay out of, built once and kept.
+
+        Voxelising costs a fraction of a second, which is worth paying to
+        keep a path off the building but not worth paying on a load nobody
+        asked a path of, so it waits until the first one is wanted.
+        """
+        scene = SCENE_STORE.scene
+        if scene is None:
+            return None
+
+        if self.obstacle is None:
+            self.statusBar().showMessage("Measuring the model to fly around it...")
+            try:
+                self.obstacle = Obstacle.from_mesh(scene.mesh)
+            except Exception as exc:
+                # Better a path that is only short than no path at all, but
+                # the user has to be told it is not being kept off the model.
+                self.statusBar().showMessage(f"Cannot fly around the model: {exc}", 8000)
+                return None
+
+        return self.obstacle
+
+    def _plan_flight_path(self):
+        """The path through the route as it stands, or None without a scene.
+
+        Planned rather than remembered: the route moves on every click, and
+        the path is cheap enough to find again that keeping one would only be
+        a second answer to go stale.
+        """
+        scene = SCENE_STORE.scene
+        if scene is None:
+            return None
+
+        rows = self._flight_path_rows()
+
+        return plan_path(scene.plan.positions[list(rows)], self._obstacle()), rows
+
+    def _refresh_flight_path(self):
+        """Replan and redraw the path, after anything that could move it."""
+        if not self.flight_path_on or SCENE_STORE.scene is None:
+            self.viewport.clear_flight_path()
+            self.plan_route_panel.show_path(None)
+            return
+
+        path, _rows = self._plan_flight_path()
+
+        self.viewport.show_flight_path(path.points)
+        self.plan_route_panel.show_path(path)
+
+    def generate_route_report(self):
+        """Write the route, its charts and its flight path out as a document.
+
+        The path is planned for the report whether or not it is on screen:
+        the report is about the flight, and asking the user to switch a line
+        on first would only be a way of getting an empty document.
+        """
+        scene = SCENE_STORE.scene
+        if scene is None:
+            return
+
+        if not len(self.route) and not SCENE_STORE.camera_count:
+            self.statusBar().showMessage("Nothing to report on", 4000)
+            return
+
+        path = self._ask_report_path()
+        if path is None:
+            return
+
+        self.statusBar().showMessage("Writing the report...")
+        try:
+            planned, rows = self._plan_flight_path()
+            # The route is what the report is about; with nothing in it the
+            # path falls back to the whole plan, and the report follows it
+            # rather than describing a route that is not there.
+            status = self._report_status(self.route.selected or rows, scene)
+
+            written = write_report(
+                path,
+                name=self._route_name(),
+                bundle=Path(self.loader.data_dir).name,
+                status=status,
+                path=planned,
+                ids=scene.plan.ids,
+                positions=scene.plan.positions,
+            )
+        except Exception as exc:
+            self.statusBar().showMessage("Report failed")
+            QMessageBox.critical(self, "ViewScope", f"Could not write the report.\n\n{exc}")
+            return
+
+        self.plan_route_panel.show_report(written)
+        self.statusBar().showMessage(f"Report written to {written}", 6000)
+
+    def _report_status(self, rows, scene):
+        """What the report describes, counted for these viewpoints.
+
+        The coverage the panel is showing is only kept while planning is on,
+        and a report is worth as much after it as during it, so anything that
+        is not to hand is counted again here.
+        """
+        described = RoutePlan()
+        described.select(rows)
+
+        observed = 0
+        if self.route_mask is not None and tuple(rows) == self.route.selected:
+            observed = int(self.route_mask.sum())
+        elif self.visibility is not None:
+            observed = int(self.visibility.union_mask(rows).sum())
+
+        return described.status(scene.plan, observed, len(scene.targets), scene.centre)
+
+    def _route_name(self) -> str:
+        """What to call this route in the report."""
+        if self.route.path is not None:
+            return self.route.path.stem
+
+        return "Unsaved route" if self.route.planning else "The whole plan"
+
+    def _ask_report_path(self):
+        """Where to write the report, or None if the user changed their mind."""
+        stem = self.route.path.stem if self.route.path is not None else "route"
+        suggested = Path(self.loader.data_dir) / f"{stem}_report.pdf"
+        chosen, _filter = QFileDialog.getSaveFileName(
+            self, "Generate report", str(suggested), "PDF (*.pdf)"
+        )
+
+        return Path(chosen) if chosen else None
 
     def _route_coverage(self):
         """The targets the route can see between them, or None when it sees none."""
@@ -670,30 +1062,38 @@ class MainWindow(QMainWindow):
         observed = 0 if self.route_mask is None else int(self.route_mask.sum())
 
         selected = set(self.route.selected)
-        if self.route_shown is not None:
-            # A camera put back into the route is drawn, whatever the file said.
-            ids = scene.plan.ids
-            self.route_shown |= {ids[i] for i in selected if i < len(ids)}
 
-        # The route colours are only worn while planning, but a loaded plan
-        # keeps the rest of the viewpoints off the screen either way: it is
-        # the plan on show until another one is loaded.
-        self.viewport.set_route_selection(
-            selected if self.route.planning else None, self.route_shown
-        )
-        self.plan_route_panel.show_route(
-            self.route.status(scene.plan, observed, len(scene.targets))
-        )
+        # Every part of this repaints the scene, and a repaint costs more
+        # than all of them together, so the whole route change is drawn once.
+        with self.viewport.held():
+            # The route colours are only worn while planning; outside it
+            # every frustum goes back to its own.
+            self.viewport.set_route_selection(selected if self.route.planning else None)
+            # Sectors are read about the model, not about the world origin:
+            # a bundle carrying a larger survey's coordinates would otherwise
+            # show its whole route standing in one sector.
+            self.plan_route_panel.show_route(
+                self.route.status(scene.plan, observed, len(scene.targets), scene.centre)
+            )
+            self._refresh_flight_path()
+            self._refresh_unobserved()
+            self._refresh_heatmap()
 
-        # Occlusion follows the route while planning, so every camera in it
-        # paints at once rather than only the one last clicked.
-        self._apply_occlusion()
+            # Occlusion follows the route while planning, so every camera in
+            # it paints at once rather than only the one last clicked.
+            self._apply_occlusion()
 
     # -- occlusion -----------------------------------------------------
 
     def _on_occlusion_toggled(self, enabled: bool):
         self.occlusion_on = enabled
         self._apply_occlusion()
+
+        # Occlusion owns the target colours while it is on and gives them
+        # back as the bundle shipped them, which is not what the route was
+        # showing. Repaint, so leaving occlusion returns what you left.
+        if not enabled:
+            self._refresh_heatmap()
 
     def _apply_occlusion(self):
         """

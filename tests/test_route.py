@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import viewscope_core as vc
-from viewscope.data.route import ROUTE_VERSION, RoutePlan, load_route
+from viewscope.data.route import ROUTE_VERSION, SECTORS, RoutePlan, count_sectors, load_route
 
 
 @pytest.fixture
@@ -124,6 +124,162 @@ def test_coverage_of_a_scene_with_no_targets_is_zero(route, plan):
 
 
 # -----------------------------------------------------------------------------
+# Sectors of the ground plane
+# -----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sector_plan():
+    """Eight viewpoints, one squarely in the middle of each sector."""
+    middles = np.arange(SECTORS) * (2.0 * np.pi / SECTORS) + np.pi / SECTORS
+    positions = np.stack(
+        [10.0 * np.cos(middles), 10.0 * np.sin(middles), np.full(SECTORS, 5.0)], axis=1
+    )
+
+    return vc.Plan(
+        camera={"width": 1368, "height": 912, "yfov_deg": 53.13},
+        ids=tuple(f"s{sector + 1}" for sector in range(SECTORS)),
+        positions=positions,
+        yaws_deg=np.zeros(SECTORS),
+        pitches_deg=np.full(SECTORS, -20.0),
+    )
+
+
+def test_each_sector_takes_the_camera_standing_in_it(sector_plan):
+    assert count_sectors(sector_plan.positions) == (1,) * SECTORS
+
+
+def test_the_plane_is_cut_into_eighths(sector_plan):
+    """Four quadrants hide a route that covers two faces of a building twice."""
+    assert SECTORS == 8
+    assert len(count_sectors(sector_plan.positions)) == 8
+
+
+def test_a_camera_high_above_the_plane_is_still_in_its_own_sector():
+    """Sectors are read off x and y; height has nothing to say about them."""
+    low = count_sectors(np.array([[3.0, 4.0, 0.0]]))
+    high = count_sectors(np.array([[3.0, 4.0, 500.0]]))
+
+    assert low == high
+    assert low[1] == 1, "53 degrees round, which is the second eighth"
+
+
+def test_the_direction_from_the_model_is_what_picks_the_sector():
+    positions = np.array(
+        [
+            [10.0, 1.0, 1.0],  # 6 degrees round -> 1
+            [1.0, 10.0, 1.0],  # 84 -> 2
+            [-10.0, 1.0, 1.0],  # 174 -> 4
+            [1.0, -10.0, 1.0],  # 276 -> 7
+            [9.0, 2.0, 1.0],  # 13 -> 1 again
+        ]
+    )
+
+    assert count_sectors(positions) == (2, 1, 0, 1, 0, 0, 1, 0)
+
+
+def test_a_camera_on_a_boundary_falls_in_the_sector_that_boundary_opens():
+    """One camera on each of the eight lines, each counting in the wedge after it."""
+    edges = np.array(
+        [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]], dtype=float
+    )
+    positions = np.concatenate([edges * 7.0, np.ones((SECTORS, 1))], axis=1)
+
+    assert count_sectors(positions) == (1,) * SECTORS
+
+
+def test_a_camera_on_the_origin_counts_in_the_first_sector():
+    assert count_sectors(np.array([[0.0, 0.0, 5.0]])) == (1, 0, 0, 0, 0, 0, 0, 0)
+
+
+def test_no_cameras_leaves_every_sector_empty():
+    assert count_sectors(np.zeros((0, 3))) == (0,) * SECTORS
+
+
+def test_sectors_are_measured_about_the_model_not_about_the_world():
+    """A bundle carrying a larger survey's coordinates sits nowhere near 0, 0.
+
+    Read from the world origin every one of these cameras is +x +y, which says
+    only that the model is north east of it. Read from the model they surround
+    it, which is the thing route planning is asking about.
+    """
+    ring = np.array(
+        [
+            [205.0, 125.0, 5.0],
+            [165.0, 125.0, 5.0],
+            [165.0, 95.0, 5.0],
+            [205.0, 95.0, 5.0],
+        ]
+    )
+
+    assert count_sectors(ring) == (4, 0, 0, 0, 0, 0, 0, 0)
+    assert count_sectors(ring, (185.0, 110.0)) == (1, 0, 0, 1, 1, 0, 0, 1)
+
+
+def test_a_three_component_centre_is_taken_as_its_ground_plane_part():
+    """`SceneData.centre` is a point in space; only its x and y matter here."""
+    camera = np.array([[9.0, 9.0, 1.0]])
+
+    assert count_sectors(camera, np.array([10.0, 10.0, 500.0])) == (0, 0, 0, 0, 0, 1, 0, 0)
+
+
+def test_a_camera_at_the_centre_counts_in_the_first_sector():
+    assert count_sectors(np.array([[7.0, 3.0, 5.0]]), (7.0, 3.0)) == (1, 0, 0, 0, 0, 0, 0, 0)
+
+
+def test_how_many_sectors_to_cut_into_can_be_asked_for():
+    """Eight is what the panel draws; the count itself is not baked in."""
+    quarters = count_sectors(np.array([[1.0, 1.0, 0.0], [-1.0, -1.0, 0.0]]), sectors=4)
+
+    assert quarters == (1, 0, 1, 0)
+
+
+def test_status_measures_from_the_origin_it_is_given(route, sector_plan):
+    """The same plan, read from outside itself rather than from its middle.
+
+    This is the shape of the bug it guards: seen from far enough away every
+    camera falls in one sector, however well the route surrounds the model.
+    """
+    route.start(SECTORS)
+
+    assert route.status(sector_plan).sectors == (1,) * SECTORS
+    assert route.status(sector_plan, origin=(-1000.0, -414.0)).sectors == (8, 0, 0, 0, 0, 0, 0, 0)
+
+
+def test_status_counts_only_the_cameras_left_in_the_route(route, sector_plan):
+    route.start(SECTORS)
+    for row in (1, 2, 3, 5, 6, 7):
+        route.toggle(row)
+
+    status = route.status(sector_plan)
+
+    assert status.sectors == (1, 0, 0, 0, 1, 0, 0, 0)
+    assert status.sector_shares == (0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0)
+
+
+def test_shares_of_an_empty_route_are_zero_rather_than_eight_equal_bars(route, sector_plan):
+    status = route.status(sector_plan)
+
+    assert status.sectors == (0,) * SECTORS
+    assert status.sector_shares == (0.0,) * SECTORS
+
+
+def test_a_route_with_no_plan_behind_it_has_no_sectors(route):
+    assert route.status(None).sectors == ()
+    assert route.status(None).sector_shares == ()
+
+
+def test_rows_beyond_the_plan_are_left_out_of_the_sectors(route, sector_plan):
+    """A route carried over from a longer plan still counts what it can."""
+    route.start(SECTORS + 2)
+
+    status = route.status(sector_plan)
+
+    assert len(status.selected) == SECTORS + 2
+    assert sum(status.sectors) == SECTORS
+
+
+# -----------------------------------------------------------------------------
 # Saving
 # -----------------------------------------------------------------------------
 
@@ -167,6 +323,59 @@ def test_saving_an_empty_route_is_refused_by_the_plan_loader(route, plan, tmp_pa
     assert json.loads(written.read_text())["viewpoints"] == []
     with pytest.raises(ValueError, match="viewpoints must be a non empty list"):
         vc.load_plan(written)
+
+
+# -----------------------------------------------------------------------------
+# The file the route belongs to
+# -----------------------------------------------------------------------------
+
+
+def test_a_route_planned_from_scratch_belongs_to_no_file(route):
+    assert route.path is None
+
+
+def test_saving_makes_the_route_belong_to_what_it_was_written_to(route, plan, tmp_path):
+    """So stopping again offers that file rather than starting the naming over."""
+    route.start(4)
+
+    written = route.save(tmp_path / "somewhere.json", plan)
+
+    assert route.path == written
+
+
+def test_a_route_read_out_of_a_file_belongs_to_it(route, tmp_path):
+    route.came_from(tmp_path / "loaded.json")
+
+    assert route.path == tmp_path / "loaded.json"
+
+
+def test_a_loaded_route_saved_back_belongs_to_wherever_it_went(route, plan, tmp_path):
+    """Save-as moves it: what is offered next is where it last went."""
+    route.came_from(tmp_path / "loaded.json")
+    route.start(4)
+
+    route.save(tmp_path / "elsewhere.json", plan)
+
+    assert route.path == tmp_path / "elsewhere.json"
+
+
+def test_another_bundle_takes_the_file_away(route, tmp_path):
+    """One bundle's route.json is not the next one's to overwrite."""
+    route.came_from(tmp_path / "loaded.json")
+
+    route.forget_file()
+
+    assert route.path is None
+
+
+def test_leaving_planning_keeps_the_file(route, plan, tmp_path):
+    """Exit saves nothing, but the route is still the one that file holds."""
+    route.came_from(tmp_path / "loaded.json")
+    route.start(4)
+
+    route.stop()
+
+    assert route.path == tmp_path / "loaded.json"
 
 
 # -----------------------------------------------------------------------------

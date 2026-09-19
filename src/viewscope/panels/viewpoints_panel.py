@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QHeaderView,
+    QMenu,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -29,6 +30,9 @@ class ViewpointsPanel(QWidget):
     """One row per planned camera; selecting a row jumps the viewport."""
 
     camera_picked = Signal(int)
+    #: Place the next camera by clicking in the 3D view rather than by typing
+    #: numbers into a dialog.
+    place_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -44,9 +48,23 @@ class ViewpointsPanel(QWidget):
 
         self._suppress = False
 
-        # Add new camera button
-        self.add_camera_button = QPushButton("Add Camera")
-        self.add_camera_button.clicked.connect(self._on_button_add_camera_clicked)
+        # Add new camera button. Two ways to say where it goes, so the button
+        # asks which rather than assuming the one it always used to.
+        self.button = QPushButton("Add Camera")
+        self.button.setToolTip("Add a viewpoint to the plan, by numbers or by eye")
+
+        self.menu = QMenu(self)
+        self.enter_action = self.menu.addAction("Enter co-ordinates...")
+        self.enter_action.setToolTip("Type the position and the angles")
+        self.enter_action.triggered.connect(self._on_button_add_camera_clicked)
+
+        self.place_action = self.menu.addAction("Place in the view")
+        self.place_action.setToolTip(
+            "Click the model where the camera stands, then click what it looks at"
+        )
+        self.place_action.triggered.connect(self.place_requested)
+
+        self.button.setMenu(self.menu)
 
         # Duplicate camera button
         self.duplicate_camera_button = QPushButton("Duplicate Camera")
@@ -58,7 +76,7 @@ class ViewpointsPanel(QWidget):
         layout.addWidget(self.table)
 
         button_layout = QHBoxLayout()
-        button_layout.addWidget(self.add_camera_button)
+        button_layout.addWidget(self.button)
         button_layout.addWidget(self.duplicate_camera_button)
         layout.addLayout(button_layout)
 
@@ -124,10 +142,11 @@ class ViewpointsPanel(QWidget):
         self._suppress = False
 
     def _on_button_add_camera_clicked(self):
+        """Add a camera from typed numbers, which is what the button always did."""
         if SCENE_STORE.scene is None:
             return
 
-        dialog = AddCameraDialog(title=self.add_camera_button.text(), parent=self)
+        dialog = AddCameraDialog(title=self.button.text(), parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
