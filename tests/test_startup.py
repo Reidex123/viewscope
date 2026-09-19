@@ -5,6 +5,7 @@ import os
 # Must be set before Qt picks a platform plugin, so these run without a display.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+
 import json  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -21,6 +22,7 @@ from viewscope.data.loader import STAGE_COUNT  # noqa: E402
 from viewscope.dialogs import build_dialog  # noqa: E402
 from viewscope.dialogs.build_dialog import BuildBundleDialog  # noqa: E402
 from viewscope.startup import (  # noqa: E402
+
     QUALITY_HIGH,
     QUALITY_LOW,
     QUALITY_MEDIUM,

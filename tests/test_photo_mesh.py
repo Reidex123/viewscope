@@ -10,6 +10,7 @@ import pytest
 import vtk
 from PIL import Image
 
+
 import viewscope.data.cache as cache
 from viewscope.config import GEOMETRY_COLOUR, PHOTO_MESH_DIR
 from viewscope.scene.photo_mesh import (
@@ -40,6 +41,13 @@ def model(tmp_path):
     Image.new("RGB", (8, 8), (0, 255, 0)).save(folder / "tex_b.png")
 
     return folder / "model.obj"
+from dataclasses import dataclass, field
+
+import pytest
+import vtk
+
+
+
 
 
 @pytest.fixture

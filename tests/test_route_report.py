@@ -12,10 +12,13 @@ from typing import Any
 import numpy as np
 import pytest
 
+
 import viewscope.route_report as rr
 from viewscope.data.flight_metrics import Drone, estimate_flight, sharpest_turn
 from viewscope.data.flight_path import FlightPath
 from viewscope.data.route import RouteStatus
+
+
 from viewscope.route_report import CHART_URLS, report_html
 
 IDS = ("vp000", "vp001", "vp002", "vp003")

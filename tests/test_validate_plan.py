@@ -2,8 +2,10 @@
 
 import json
 
+
 from viewscope.data import validate
 from viewscope.data.validate import validate_plan
+
 
 
 def write_plan(folder, viewpoints):

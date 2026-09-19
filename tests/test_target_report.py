@@ -7,8 +7,8 @@ import pytest
 import trimesh
 
 import viewscope_core as vc
-from viewscope.data.scene import SceneData
-from viewscope.scene.target_report import (
+from viewscope.data import SceneData
+from viewscope.scene import (
     ANGLE,
     DISTANCE,
     EVEN,
