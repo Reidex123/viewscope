@@ -377,3 +377,236 @@ def test_a_hop_is_judged_the_same_whatever_it_is_asked_alongside(block):
     ]
 
     assert all(verdict == alone for verdict in alongside)
+
+
+# -----------------------------------------------------------------------------
+# An obstacle built cell by cell, where the geometry has to be exact
+# -----------------------------------------------------------------------------
+
+
+def walled(shape=(9, 9, 4)) -> Obstacle:
+    """A wall straight across the middle of a box of cells, floor to ceiling."""
+    filled = np.zeros(shape, dtype=bool)
+    filled[:, shape[1] // 2, :] = True
+
+    return Obstacle(filled, origin=(0.0, 0.0, 0.0), pitch=1.0)
+
+
+def roofed() -> Obstacle:
+    """A wall with a lid on it, so there is no way over the top either."""
+    filled = np.zeros((9, 9, 4), dtype=bool)
+    filled[:, 4, :] = True
+    filled[:, :, -1] = True
+
+    return Obstacle(filled, origin=(0.0, 0.0, 0.0), pitch=1.0)
+
+
+def test_a_hop_can_climb_over_a_wall():
+    obstacle = walled()
+
+    way = obstacle.over_the_top([4.5, 1.5, 0.5], [4.5, 7.5, 0.5])
+
+    assert way is not None
+    assert len(way) == 2
+    assert way[0][2] == way[1][2] > obstacle.ceiling - 1e-9
+
+
+def test_a_hop_under_a_lid_cannot_climb_over_it():
+    """The crossing leg is clear by definition; the climbs are not."""
+    assert roofed().over_the_top([4.5, 1.5, 0.5], [4.5, 7.5, 0.5]) is None
+
+
+# -----------------------------------------------------------------------------
+# Degenerate inputs
+# -----------------------------------------------------------------------------
+
+
+def test_nothing_to_check_blocks_nothing():
+    blocked = walled().blocks(np.zeros((0, 3)), np.zeros((0, 3)))
+
+    assert blocked.shape == (0,)
+    assert not blocked.any()
+
+
+def test_a_single_viewpoint_has_no_pairs_to_block():
+    blocked = walled().blocked_pairs(np.array([[1.0, 1.0, 1.0]]))
+
+    assert blocked.shape == (1, 1)
+    assert not blocked.any()
+
+
+def test_no_viewpoints_at_all_has_no_pairs():
+    assert walled().blocked_pairs(np.zeros((0, 3))).shape == (0, 0)
+
+
+def test_a_line_of_one_point_fouls_nothing():
+    assert fp._fouls(np.array([[1.0, 1.0, 1.0]]), walled()) is False
+
+
+# -----------------------------------------------------------------------------
+# Path length
+# -----------------------------------------------------------------------------
+
+
+def test_a_length_can_be_measured_in_a_given_order():
+    """The order is what the planner works in; the points never get sorted."""
+    square = np.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 4.0, 0.0]])
+
+    assert fp.path_length(square, order=[0, 2, 1]) == pytest.approx(5.0 + 4.0)
+
+
+def test_one_point_is_no_distance():
+    assert fp.path_length(np.array([[1.0, 2.0, 3.0]])) == 0.0
+
+
+def test_no_points_are_no_distance():
+    assert fp.path_length(np.zeros((0, 3))) == 0.0
+
+
+def test_one_point_in_a_given_order_is_no_distance():
+    assert fp.path_length(np.array([[1.0, 2.0, 3.0]]), order=[0]) == 0.0
+
+
+# -----------------------------------------------------------------------------
+# Hops that cannot be flown straight
+# -----------------------------------------------------------------------------
+
+
+def gapped() -> Obstacle:
+    """A wall with a gap at one end, under a lid so nothing can climb over.
+
+    The only way from one side to the other is round through the gap, which
+    is what makes a hop take other viewpoints on its way.
+    """
+    filled = np.zeros((9, 9, 4), dtype=bool)
+    filled[:7, 4, :] = True
+    filled[:, :, -1] = True
+
+    return Obstacle(filled, origin=(0.0, 0.0, 0.0), pitch=1.0)
+
+
+def test_a_hop_across_a_wall_goes_round_by_way_of_other_viewpoints():
+    """Four viewpoints either side of the wall, with the gap the only way over."""
+    positions = np.array(
+        [[7.21, 1.45, 0.5], [1.81, 3.52, 0.5], [4.65, 4.57, 0.5], [8.17, 5.72, 0.5]]
+    )
+
+    path = plan_path(positions, gapped())
+
+    assert path.checked
+    assert path.detours == 1
+    assert path.crossings == 0
+    assert path.avoidances == 1
+
+
+def test_a_detour_flies_every_viewpoint_it_goes_by():
+    positions = np.array(
+        [[7.21, 1.45, 0.5], [1.81, 3.52, 0.5], [4.65, 4.57, 0.5], [8.17, 5.72, 0.5]]
+    )
+
+    path = plan_path(positions, gapped())
+
+    assert sorted(path.order) == [0, 1, 2, 3]
+    assert len(path.points) > len(positions)
+
+
+def test_a_hop_over_a_wall_climbs_when_there_is_no_way_round():
+    """Nothing is above the model, so the sky is always the last resort."""
+    positions = np.array([[1.5, 1.5, 0.5], [1.5, 7.5, 0.5], [3.5, 1.5, 0.5], [3.5, 7.5, 0.5]])
+
+    path = plan_path(positions, walled())
+
+    assert path.climbs >= 1
+    assert path.crossings == 0
+    assert path.clear
+
+
+def test_a_hop_with_no_way_round_or_over_is_flown_and_reported():
+    """Better a route that says it crosses than one that drops a viewpoint."""
+    positions = np.array([[4.5, 1.5, 0.5], [4.5, 7.5, 0.5]])
+
+    path = plan_path(positions, roofed())
+
+    assert path.crossings >= 1
+    assert not path.clear
+    assert len(path.order) == 2
+
+
+def test_a_crossing_still_leaves_every_viewpoint_on_the_route():
+    positions = np.array([[4.5, 1.5, 0.5], [4.5, 7.5, 0.5]])
+
+    path = plan_path(positions, roofed())
+
+    assert sorted(path.order) == [0, 1]
+
+
+# -----------------------------------------------------------------------------
+# The way between two viewpoints
+# -----------------------------------------------------------------------------
+
+
+def test_a_way_through_other_viewpoints_is_read_back_in_flying_order():
+    previous = np.array([[-1, 0, 1], [-1, -1, -1], [-1, -1, -1]], dtype=np.int64)
+
+    assert fp._between(previous, 0, 1) == [1]
+    assert fp._between(previous, 0, 2) == [1, 2]
+
+
+def test_no_way_between_two_viewpoints_reads_back_as_none():
+    previous = np.full((3, 3), -1, dtype=np.int64)
+
+    assert fp._between(previous, 0, 2) is None
+
+
+# -----------------------------------------------------------------------------
+# Resampling a stretch that goes nowhere
+# -----------------------------------------------------------------------------
+
+
+def test_a_stretch_that_never_moves_is_left_as_its_two_ends():
+    same = np.tile([1.0, 2.0, 3.0], (4, 1))
+
+    assert fp._resample(same, spacing=0.5).shape == (2, 3)
+
+
+# -----------------------------------------------------------------------------
+# The budgets the search is held to
+# -----------------------------------------------------------------------------
+
+
+def test_a_very_large_plan_is_ordered_without_uncrossing_it():
+    """Past the matrix limit 2-opt is skipped: the ordering still has to come
+    back complete, just not optimised."""
+    points = np.column_stack(
+        [
+            np.arange(fp.MATRIX_LIMIT + 1, dtype=float),
+            np.zeros(fp.MATRIX_LIMIT + 1),
+            np.zeros(fp.MATRIX_LIMIT + 1),
+        ]
+    )
+
+    order = fp._order(points, fp._distances(points))
+
+    assert sorted(order) == list(range(len(points)))
+
+
+def test_uncrossing_stops_when_its_passes_run_out(monkeypatch):
+    """A budget, not a convergence test: it must return a usable tour either way."""
+    monkeypatch.setattr(fp, "MAX_PASSES", 1)
+    crossed = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [1.0, 1.0, 0.0], [9.0, 1.0, 0.0]])
+
+    order = fp._two_opt(np.arange(4), fp._distances(crossed))
+
+    assert sorted(order) == [0, 1, 2, 3]
+
+
+def test_pulling_stops_when_its_passes_run_out(monkeypatch):
+    """The line still has to be clear when the budget is what ends the loop."""
+    monkeypatch.setattr(fp, "PULL_PASSES", 1)
+    obstacle = walled()
+    slack = np.array([[1.5, 1.5, 0.5], [1.5, 6.5, 0.5], [6.5, 6.5, 0.5], [6.5, 1.5, 0.5]])
+
+    pulled = fp._taut(slack, obstacle)
+
+    assert len(pulled) >= 2
+    assert not fp._fouls(pulled, obstacle)

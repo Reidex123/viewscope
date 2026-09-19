@@ -447,3 +447,74 @@ def test_the_same_viewpoint_twice_is_refused(tmp_path):
 def test_a_viewpoint_that_cannot_be_flown_is_refused(tmp_path, viewpoint, message):
     with pytest.raises(ValueError, match=message):
         load_route(_write(tmp_path, {"viewpoints": [viewpoint]}))
+
+
+# -----------------------------------------------------------------------------
+# Selecting and resuming
+# -----------------------------------------------------------------------------
+
+
+def test_select_replaces_the_route_with_exactly_those_rows():
+    """Unlike toggle, this is not additive: what is passed in is the whole route."""
+    plan = RoutePlan()
+    plan.select([3, 1, 2])
+    assert plan.selected == (1, 2, 3)
+
+    plan.select([5])
+    assert plan.selected == (5,)
+
+
+def test_select_takes_any_integer_like_index():
+    plan = RoutePlan()
+    plan.select(np.array([2, 0]))
+    assert plan.selected == (0, 2)
+
+
+def test_resume_carries_on_with_what_is_already_there():
+    """Reopening a saved route puts the user back into planning, rows intact."""
+    plan = RoutePlan()
+    plan.select([1, 4])
+    assert not plan.planning
+
+    plan.resume()
+
+    assert plan.planning
+    assert plan.selected == (1, 4)
+
+
+# -----------------------------------------------------------------------------
+# Route files that cannot be flown
+# -----------------------------------------------------------------------------
+
+
+def test_a_route_file_holding_a_bare_list_is_not_a_document(tmp_path):
+    path = tmp_path / "route.json"
+    path.write_text("[1, 2, 3]")
+
+    with pytest.raises(ValueError, match="is not a route document"):
+        load_route(path)
+
+
+def test_a_viewpoint_that_is_not_an_object_is_refused(tmp_path):
+    path = tmp_path / "route.json"
+    path.write_text(json.dumps({"viewpoints": ["vp000"]}))
+
+    with pytest.raises(ValueError, match="viewpoint 0 is not an object"):
+        load_route(path)
+
+
+def test_a_position_holding_something_non_numeric_is_refused(tmp_path):
+    """Three entries, so the shape check passes and the float cast is what fails."""
+    path = tmp_path / "route.json"
+    path.write_text(
+        json.dumps(
+            {
+                "viewpoints": [
+                    {"id": "vp000", "position": [0, 0, "up"], "yaw_deg": 0, "pitch_deg": 0}
+                ]
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="pose that is not numeric"):
+        load_route(path)

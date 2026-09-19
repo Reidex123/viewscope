@@ -84,6 +84,9 @@ class SectorBarChart(QWidget):
         """Drawing the line that represents the average weight.
         Claude recommended a QLineSeries. The BarSeries and LineSeries don't share
         the same axis coordinate cleanly, so this Line overlays ontop of the BarSeries."""
+        if average is None:
+            return  # nothing observes this target, so there is no average to draw
+
         line = QLineSeries()
         line.append(0.0, average)  # first category centre
         line.append(len(categories) - 1.0, average)

@@ -16,6 +16,7 @@ from viewscope.data.flight_metrics import (
     SECONDS_PER_HOUR,
     Drone,
     Turn,
+    _hop_seconds,
     estimate_flight,
     sharpest_turn,
 )
@@ -205,3 +206,39 @@ def test_stops_default_to_the_points_of_the_line(drone):
     line = np.array([[0.0, 0, 0], [30, 0, 0], [30, 40, 0]])
 
     assert estimate_flight(line, drone=drone).stops == 3
+
+
+# -----------------------------------------------------------------------------
+# Hops that cost nothing
+# -----------------------------------------------------------------------------
+
+
+def test_a_hop_of_no_length_takes_no_time(drone):
+    """Repeated points are dropped upstream, but the arithmetic below would
+    divide by a zero-length hop, so it is refused here rather than there."""
+    assert _hop_seconds(0.0, drone) == 0.0
+
+
+def test_a_negative_hop_takes_no_time(drone):
+    assert _hop_seconds(-5.0, drone) == 0.0
+
+
+def test_a_drone_that_cannot_move_is_costed_at_nothing_rather_than_forever(drone):
+    """Zero speed would otherwise divide by zero and report an infinite flight."""
+    from dataclasses import replace
+
+    assert _hop_seconds(10.0, replace(drone, cruise_speed_ms=0.0)) == 0.0
+    assert _hop_seconds(10.0, replace(drone, acceleration_ms2=0.0)) == 0.0
+
+
+def test_a_standing_still_drone_still_reports_its_dwell_and_hover_cost(drone):
+    """The battery drains while hovering even when nothing is flown."""
+    from dataclasses import replace
+
+    flight = estimate_flight(
+        [[0.0, 0.0, 5.0], [10.0, 0.0, 5.0]], drone=replace(drone, cruise_speed_ms=0.0)
+    )
+
+    assert flight.flying_seconds == 0.0
+    assert flight.dwelling_seconds > 0.0
+    assert flight.energy_wh > 0.0
