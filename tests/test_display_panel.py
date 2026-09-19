@@ -1,4 +1,4 @@
-"""Unit tests for src/viewscope/DisplayPanel.py.
+"""Unit tests for src/viewscope/panels/display_panel.py.
 
 The panel owns no state of its own: every control just announces what the
 user did, so the signals are what is checked.
@@ -7,7 +7,7 @@ user did, so the signals are what is checked.
 import pytest
 
 from viewscope.config import MODE_ALL, MODES, SCALAR_FIELDS
-from viewscope.DisplayPanel import DisplayPanel
+from viewscope.panels.display_panel import DisplayPanel
 
 
 @pytest.fixture

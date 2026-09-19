@@ -1,8 +1,8 @@
-"""Unit tests for src/viewscope/dialogs/addcamera_dialog.py."""
+"""Unit tests for src/viewscope/dialogs/add_camera_dialog.py."""
 
 import pytest
 
-from viewscope.dialogs.addcamera_dialog import AddCameraDialog
+from viewscope.dialogs.add_camera_dialog import AddCameraDialog
 
 
 @pytest.fixture

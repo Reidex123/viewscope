@@ -19,10 +19,9 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from viewscope import startup  # noqa: E402
 from viewscope.config import Project  # noqa: E402
 from viewscope.data.loader import STAGE_COUNT  # noqa: E402
-from viewscope.dialogs import build_dialog  # noqa: E402
-from viewscope.dialogs.build_dialog import BuildBundleDialog  # noqa: E402
+from viewscope.dialogs import build_bundle_dialog  # noqa: E402
+from viewscope.dialogs.build_bundle_dialog import BuildBundleDialog  # noqa: E402
 from viewscope.startup import (  # noqa: E402
-
     QUALITY_HIGH,
     QUALITY_LOW,
     QUALITY_MEDIUM,
@@ -352,7 +351,7 @@ def test_browsing_for_an_out_dir_replaces_what_was_there(app, tmp_path, monkeypa
     chosen = tmp_path / "bundles"
 
     monkeypatch.setattr(
-        build_dialog.QFileDialog, "getExistingDirectory", lambda *args, **kwargs: str(chosen)
+        build_bundle_dialog.QFileDialog, "getExistingDirectory", lambda *args, **kwargs: str(chosen)
     )
     dialog._choose_out_dir()
 
@@ -367,7 +366,7 @@ def test_cancelling_the_browse_leaves_the_default_out_dir_alone(app, tmp_path, m
     before = dialog.out_dir.text()
 
     monkeypatch.setattr(
-        build_dialog.QFileDialog, "getExistingDirectory", lambda *args, **kwargs: ""
+        build_bundle_dialog.QFileDialog, "getExistingDirectory", lambda *args, **kwargs: ""
     )
     dialog._choose_out_dir()
 

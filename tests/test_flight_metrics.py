@@ -16,10 +16,10 @@ from viewscope.data import (
     SECONDS_PER_HOUR,
     Drone,
     Turn,
-    _hop_seconds,
     estimate_flight,
     sharpest_turn,
 )
+from viewscope.data.flight_metrics import _hop_seconds
 
 
 @pytest.fixture

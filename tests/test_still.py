@@ -8,10 +8,8 @@ import numpy as np
 import pytest
 import trimesh
 
-
 import viewscope_core as vc
 from viewscope.scene.still import StillRenderer
-
 
 POSE = vc.camera_pose(np.array([0.0, 0.0, 12.0]), 0.0, -80.0)
 

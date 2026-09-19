@@ -6,8 +6,9 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from viewscope.camera.structs import CameraInfo
-from viewscope.data import SceneData
 from viewscope_core import Plan
+
+from .scene import SceneData
 
 
 class SceneStore(QObject):

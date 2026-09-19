@@ -14,7 +14,6 @@ from viewscope.data.route import RouteStatus
 from viewscope.panels.plan_route_panel import PATH_IDLE, PATH_SHOWN, PlanRoutePanel
 
 
-
 @pytest.fixture(scope="module")
 def app():
     return QApplication.instance() or QApplication([])

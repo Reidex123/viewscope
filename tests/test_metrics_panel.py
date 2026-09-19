@@ -1,4 +1,4 @@
-"""Unit tests for src/viewscope/MetricsPanel.py.
+"""Unit tests for src/viewscope/panels/metrics_panel.py.
 
 Read-only figures, so what is checked is the text that lands in each row.
 """
@@ -8,7 +8,7 @@ import pytest
 import trimesh
 
 from viewscope.camera.structs import CameraInfo
-from viewscope.MetricsPanel import MetricsPanel
+from viewscope.panels.metrics_panel import MetricsPanel
 from viewscope.scene.stats import FieldStats
 
 
