@@ -17,6 +17,7 @@ class SceneStore(QObject):
     scene_unloaded = Signal()
     scene_changed = Signal()
     plan_changed = Signal(CameraInfo)
+    camera_moved = Signal(int)  # one camera's position changed; nothing else did
 
     def __init__(self):
         super().__init__()
@@ -68,6 +69,51 @@ class SceneStore(QObject):
         self.new_camera_ids.add(new_id)  # NOTE(Azaam): Adds new cameras to this set
         self.scene_changed.emit()
         self.plan_changed.emit(info)
+
+    def move_camera(self, index: int, position: tuple[float, float, float]) -> None:
+        """
+        Update selected camera's position in place. Doesn't touch yaw/pitch or ids,
+        and deliberately doesn't emit plan_changed.
+        """
+        if self.scene is None:
+            return
+
+        old_plan = self.scene.plan
+        new_positions = old_plan.positions.copy()
+        new_positions[index] = np.asarray(position, dtype=float)
+
+        self.scene.plan = Plan(
+            camera=old_plan.camera,
+            ids=old_plan.ids,
+            positions=new_positions,
+            yaws_deg=old_plan.yaws_deg,
+            pitches_deg=old_plan.pitches_deg,
+        )
+
+        self.camera_moved.emit(index)
+
+    # Unused
+    def rotate_camera(self, index: int, delta_yaw_deg: float = 0.0, delta_pitch_deg: float = 0.0):
+        """Nudge one camera's yaw/pitch in place. Mirrors move_camera - see its
+        note about why this doesn't emit plan_changed."""
+        if self.scene is None:
+            return
+
+        old_plan = self.scene.plan
+        new_yaws = old_plan.yaws_deg.copy()
+        new_pitches = old_plan.pitches_deg.copy()
+        new_yaws[index] = float(new_yaws[index] + delta_yaw_deg)
+        new_pitches[index] = float(new_pitches[index] + delta_pitch_deg)
+
+        self.scene.plan = Plan(
+            camera=old_plan.camera,
+            ids=old_plan.ids,
+            positions=old_plan.positions,
+            yaws_deg=new_yaws,
+            pitches_deg=new_pitches,
+        )
+
+        self.camera_moved.emit(index)
 
     def ensure_cameras(self, entries) -> tuple[tuple[int, ...], int]:
         """

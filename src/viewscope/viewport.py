@@ -34,7 +34,13 @@ from viewscope.data.scene import SceneData
 from viewscope.data.store import SCENE_STORE
 from viewscope.scene import transform
 from viewscope.scene.camera import CameraMode, SceneCameraController
-from viewscope.scene.gizmos import CameraGlyphs, CameraModeGizmo, CameraOutline, FloorGrid
+from viewscope.scene.gizmos import (
+    CameraGlyphs,
+    CameraModeGizmo,
+    CameraOutline,
+    FloorGrid,
+    TranslationGizmo,
+)
 from viewscope.scene.photo_mesh import PhotoMesh
 from viewscope.scene.stats import FieldStats
 from viewscope.scene.still import StillRenderer
@@ -75,7 +81,9 @@ class Viewport(QVTKRenderWindowInteractor):
         self._interactor = self.GetRenderWindow().GetInteractor()
         self._interactor.SetInteractorStyle(vtk.vtkInteractorStyleUser())
 
-        self._mouse_picker = vtk.vtkPropPicker()
+        # self._mouse_picker = vtk.vtkPropPicker()
+        self._mouse_picker = vtk.vtkCellPicker()
+        # self._mouse_picker.SetTolerance(0.0)
         self._mouse_picker.PickFromListOn()
 
         # Targets are picked off the surface they sit on, so a click never
@@ -139,6 +147,8 @@ class Viewport(QVTKRenderWindowInteractor):
         representation.AnchorToUpperLeft()
 
         self.set_camera_orientation_visible(True)
+
+        self.translation_gizmo = TranslationGizmo(self.renderer)
 
         # CameraMode gizmo configuration
         self.camera_mode_gizmo = CameraModeGizmo(self)
@@ -389,6 +399,18 @@ class Viewport(QVTKRenderWindowInteractor):
             if self.selected_camera_pos != (0, 0, 0):
                 self.selected_outline.build(self.renderer, self.selected_camera_pos)
 
+                actor = self.glyphs.actor_of_id(info.index)
+                if actor is not None:
+                    self.translation_gizmo.attach(
+                        actor,
+                        heading_deg=info.yaw,
+                        on_move=lambda pos, idx=info.index: SCENE_STORE.move_camera(
+                            idx, tuple(pos.tolist())
+                        ),
+                    )
+        else:
+            self.translation_gizmo.detach()
+
         self.render()
 
     def on_plan_changed(self):
@@ -564,6 +586,20 @@ class Viewport(QVTKRenderWindowInteractor):
         self._drag_px = 0.0
         self._picked_glyph = False
 
+        if ev.button() == Qt.MouseButton.LeftButton:
+            x, y = self._display_position(ev.position())
+            if self.translation_gizmo.try_start_drag(x, y):
+                super().mousePressEvent(ev)
+                return
+            if self._pick_camera_glyph(ev):
+                self._picked_glyph = True
+                super().mousePressEvent(ev)
+                return
+
+        # if (ev.button() in (...) and not self._mouse_locked):
+        #     self._mouse_lock_enter(ev)
+        # super().mousePressEvent(ev)
+
         # NOTE(Adam): Early-return here handles camera-click vs viewport manip on left-click
         if (ev.button() == Qt.MouseButton.LeftButton) and self._pick_camera_glyph(ev):
             self._picked_glyph = True
@@ -581,6 +617,11 @@ class Viewport(QVTKRenderWindowInteractor):
 
     def mouseReleaseEvent(self, ev: QMouseEvent):
         """Unlock the mouse when all tracked mouse buttons have been released."""
+
+        if self.translation_gizmo.active:
+            self.translation_gizmo.end_drag()
+            return
+        #         super().mouseReleaseEvent(ev)
         super().mouseReleaseEvent(ev)
 
         if self._mouse_locked and not (
@@ -606,6 +647,11 @@ class Viewport(QVTKRenderWindowInteractor):
         is reset back to its initial anchor position to allow infinite range-of-motion
         without running off-screen.
         """
+        if self.translation_gizmo.active:
+            x, y = self._display_position(ev.position())
+            self.translation_gizmo.drag(x, y)
+            self.render()
+            return
         if not self._mouse_locked:
             super().mouseMoveEvent(ev)
             return
