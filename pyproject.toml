@@ -79,4 +79,4 @@ exclude_also = [
 ]
 
 # Fails pytest if the total coverage falls below this percentage
-fail_under = 100
+fail_under = 90

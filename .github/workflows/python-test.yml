@@ -9,7 +9,7 @@ on:
       - ".ruff.toml"
       - "pyproject.toml"
       - "uv.lock"
-      - ".github/workflows/test.yml"
+      - ".github/workflows/python-test.yml"
 
   push:
     branches: ["master", "main"]
